@@ -15,7 +15,7 @@ export default async function LancamentosPage() {
   const transactions = await prisma.transaction.findMany({
     where: { companyId: session.companyId },
     include: { supplier: true, category: true },
-    orderBy: { dueDate: "desc" },
+    orderBy: { createdAt: "desc" },
     take: 200,
   });
 
