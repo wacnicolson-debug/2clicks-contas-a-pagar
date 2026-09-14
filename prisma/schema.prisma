@@ -1,0 +1,277 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  cnpj      String?
+  googleRefreshToken String? // refresh token OAuth do Google da empresa (dono real das planilhas)
+  createdAt DateTime @default(now())
+
+  users        User[]
+  suppliers    Supplier[]
+  categories   Category[]
+  documents    Document[]
+  transactions Transaction[]
+  bankLines    BankStatementLine[]
+  rowIndexes   SheetRowIndex[]
+  sheets       CompanySheet[]
+}
+
+// Uma planilha Google Sheets por empresa POR ANO — evita uma única planilha
+// crescer pra sempre com dezenas de anos de abas. O app cria a do ano
+// seguinte sozinho, na hora que precisar (ver getOrCreateCompanySheetForYear).
+model CompanySheet {
+  id            String   @id @default(cuid())
+  companyId     String
+  company       Company  @relation(fields: [companyId], references: [id])
+  year          Int
+  spreadsheetId String
+  createdAt     DateTime @default(now())
+
+  @@unique([companyId, year])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  companyId    String
+  company      Company  @relation(fields: [companyId], references: [id])
+  username     String
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  documents     Document[]
+  transactions  Transaction[]
+
+  @@unique([companyId, username])
+}
+
+enum SupplierKind {
+  FORNECEDOR
+  CLIENTE
+}
+
+enum PaymentStatus {
+  PAGO
+  A_PAGAR
+}
+
+enum PaymentMethod {
+  BOLETO
+  PIX
+  DEBITO_CONTA
+}
+
+// Fornecedor ou Cliente. Guarda o "perfil aprendido" na primeira nota,
+// reaplicado automaticamente a partir da segunda (ver regra de automação).
+model Supplier {
+  id               String   @id @default(cuid())
+  companyId        String
+  company          Company  @relation(fields: [companyId], references: [id])
+  name             String
+  taxId            String? // CNPJ/CPF, quando visível no documento
+  normalizedName   String // nome em minúsculo/sem acento, usado como fallback de casamento
+
+  kind              SupplierKind?
+  defaultStatus     PaymentStatus?
+  paymentMethod     PaymentMethod?
+  pixKey            String?
+  defaultCategoryId String?
+  defaultCategory   Category? @relation(fields: [defaultCategoryId], references: [id])
+  // Exceção ao "só pergunta na 1ª nota": alguns fornecedores mandam notas
+  // idênticas na aparência mas de categorias diferentes (ex: mão de obra
+  // normal vs hora extra) — pra esses, a categoria é perguntada toda vez,
+  // mesmo com o resto do perfil (Fornecedor/Cliente, pagamento) já sabido.
+  alwaysAskCategory Boolean @default(false)
+
+  createdAt    DateTime       @default(now())
+  documentPages DocumentPage[]
+  transactions  Transaction[]
+
+  @@unique([companyId, normalizedName])
+  @@index([companyId, taxId])
+}
+
+// Categoria de custo, por empresa. Lista aberta: cresce sozinha
+// conforme o app encontra tipos de despesa novos lendo notas.
+model Category {
+  id             String   @id @default(cuid())
+  companyId      String
+  company        Company  @relation(fields: [companyId], references: [id])
+  name           String
+  normalizedName String // sem acento/pontuação, pra "matéria-prima - tecidos" e "matéria prima - tecidos" caírem na mesma categoria
+  createdAt      DateTime @default(now())
+
+  suppliers    Supplier[]
+  transactions Transaction[]
+
+  @@unique([companyId, normalizedName])
+}
+
+enum DocumentStatus {
+  PENDING
+  PROCESSING
+  AWAITING_USER_INPUT
+  DONE
+  ERROR
+}
+
+// Distingue arquivo de notas/boletos (fluxo original) de extrato bancário
+// (conciliação — ver BankStatementLine) — mesmo pipeline de upload/IA/status,
+// só muda qual função do Inngest processa e como as páginas viram lançamento.
+enum DocumentKind {
+  INVOICES
+  BANK_STATEMENT
+}
+
+// O arquivo enviado pelo usuário (PDF/imagem), pode conter várias páginas/notas.
+model Document {
+  id               String         @id @default(cuid())
+  companyId        String
+  company          Company        @relation(fields: [companyId], references: [id])
+  uploadedById     String
+  uploadedBy       User           @relation(fields: [uploadedById], references: [id])
+  originalFilename String
+  storagePath      String // caminho no Supabase Storage
+  mimeType         String
+  // SHA-256 do conteúdo do arquivo — detecta reenvio do mesmo arquivo (por
+  // engano, duplo clique, etc) antes de gastar IA/gerar lançamento duplicado.
+  contentHash      String?
+  kind             DocumentKind   @default(INVOICES)
+  status           DocumentStatus @default(PENDING)
+  uploadedAt       DateTime       @default(now())
+  processedAt      DateTime?
+
+  pages        DocumentPage[]
+  transactions Transaction[]
+  bankLines    BankStatementLine[]
+
+  @@index([companyId, contentHash])
+}
+
+// Resultado da leitura por IA de 1 página do documento (1 página = 1 nota).
+model DocumentPage {
+  id            String         @id @default(cuid())
+  documentId    String
+  document      Document       @relation(fields: [documentId], references: [id])
+  pageNumber    Int
+  rawExtraction Json // saída estruturada completa da IA, para auditoria/depuração
+  supplierId    String?
+  supplier      Supplier?      @relation(fields: [supplierId], references: [id])
+  confidence    Float?
+  status        DocumentStatus @default(PENDING)
+
+  @@index([documentId, pageNumber])
+}
+
+enum TransactionKind {
+  PAYABLE
+  RECEIVABLE
+}
+
+enum SheetSyncStatus {
+  PENDING
+  SYNCED
+  ERROR
+}
+
+// A "Obrigação a Pagar" (ou a receber): código=id, credor/código do fornecedor=supplierId,
+// vencimento=dueDate, valor=amount, descrição=description, data=createdAt, usuário=createdByUserId
+model Transaction {
+  id             String           @id @default(cuid())
+  companyId      String
+  company        Company          @relation(fields: [companyId], references: [id])
+  kind           TransactionKind
+  documentId     String?
+  document       Document?        @relation(fields: [documentId], references: [id])
+  documentPageId String?
+
+  supplierId String
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+
+  amount      Decimal   @db.Decimal(14, 2)
+  dueDate     DateTime
+  // Data real da compra/venda (emissão), quando o vencimento é bem mais pra
+  // frente (nota de prazo longo, lançada com atraso) — se preenchida, o
+  // custo/receita conta no MÊS DESTA DATA na Classificação de Custos, não no
+  // mês do vencimento (que continua sendo o que manda na aba de Contas a
+  // Pagar/Recebimentos, pra saber quando de fato pagar/receber).
+  noteDate    DateTime?
+  description String?
+
+  paymentStatus PaymentStatus? // só faz sentido para PAYABLE
+  paymentMethod PaymentMethod? // só faz sentido para PAYABLE
+  pixKey        String?
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  installmentIndex Int? // suporte a nota com múltiplas parcelas (Fase 1.5+)
+  installmentTotal Int?
+
+  // Número da nota fiscal/fatura/boleto, quando visível no documento — só
+  // exibição (conferência manual contra o extrato bancário), não usado em
+  // nenhum casamento automático.
+  noteNumber String?
+
+  paid Boolean @default(false)
+
+  createdByUserId String
+  createdBy       User     @relation(fields: [createdByUserId], references: [id])
+  createdAt       DateTime @default(now())
+
+  sheetSyncStatus SheetSyncStatus @default(PENDING)
+  sheetCellRef    String? // ex: "Janeiro!A47", preenchido após sincronizar
+  // Quando noteDate cai num mês diferente do vencimento, o custo é registrado
+  // À PARTE no histórico oculto (mesmo mecanismo do "Custos Pagos") sob o mês
+  // de noteDate — esta referência aponta pra essa linha extra, pra dar pra
+  // limpar na exclusão. Fica null quando não há essa divergência.
+  costLogCellRef  String?
+
+  @@index([companyId, dueDate])
+}
+
+enum BankLineStatus {
+  MATCHED // bateu com um Transaction já existente — só fica marcado, nada muda no lançamento
+  ORPHAN // não bateu com nada — esperando o usuário responder (vira DocumentPage)
+  CLASSIFIED // órfã já respondida — Transaction novo criado a partir dela
+}
+
+// Linha do extrato bancário enviado ("Adicionar Extrato") — usada pra conciliar
+// com os lançamentos já feitos via notas e achar o que saiu da conta sem nota
+// correspondente (juros, tarifas, Uber sem nota, etc).
+model BankStatementLine {
+  id                   String         @id @default(cuid())
+  companyId            String
+  company              Company        @relation(fields: [companyId], references: [id])
+  documentId           String
+  document             Document       @relation(fields: [documentId], references: [id])
+  // Linha órfã: liga a página de perguntas criada pra ela, pra rota de
+  // resposta saber qual BankStatementLine marcar como CLASSIFIED depois.
+  documentPageId       String?        @unique
+  rawDescription       String
+  amount               Decimal        @db.Decimal(14, 2)
+  date                 DateTime
+  matchedTransactionId String?
+  status               BankLineStatus
+  createdAt            DateTime       @default(now())
+}
+
+// Mapa interno de "em que linha da planilha cada coisa está" — evita
+// ter que contar linhas ou ler a planilha de volta para descobrir uma posição.
+model SheetRowIndex {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+  year      Int // "Janeiro" de 2026 e de 2027 são planilhas diferentes
+  tabName   String // ex: "Janeiro", "Classificação de Custos"
+  key       String // ex: "day-15" ou "category-Frete"
+  rowIndex  Int // índice de linha, base 0 (convenção da API do Sheets)
+
+  @@unique([companyId, year, tabName, key])
+}
