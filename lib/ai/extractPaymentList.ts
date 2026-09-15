@@ -33,7 +33,8 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
             },
             payeeNameRaw: {
               type: "string",
-              description: "Nome do favorecido/fornecedor exatamente como aparece na lista",
+              description:
+                "Nome do BENEFICIÁRIO FINAL/fornecedor real — se o documento trouxer tanto um 'Beneficiário' quanto um 'Beneficiário Final' (ou 'Cedente'/'Sacador' etc.) diferentes, use sempre o beneficiário final, exatamente como aparece.",
             },
             taxId: {
               type: ["string", "null"],
@@ -78,8 +79,8 @@ const SYSTEM_PROMPT = `Você lê relações/listas consolidadas de pagamentos j�
 
 Extraia TODA linha da lista, na ordem em que aparecem. Para cada linha, identifique:
 - a data em que o pagamento foi feito (formato AAAA-MM-DD)
-- o nome do favorecido/fornecedor exatamente como aparece (sem tentar "corrigir" ou padronizar)
-- o CNPJ/CPF, se estiver visível
+- o nome do BENEFICIÁRIO FINAL — o fornecedor/credor real, não um intermediário financeiro. É MUITO COMUM um boleto ser cedido/securitizado: o campo "Beneficiário" genérico mostra uma securitizadora/cessionária (ex: "MULTIPLIKE SECURITIZADORA S.A.", fundos, factorings), mas o documento sempre traz também o beneficiário final — o fornecedor de verdade a quem o dinheiro é devido. Quando os dois aparecerem diferentes, use SEMPRE o beneficiário final, exatamente como está escrito (sem "corrigir" ou padronizar).
+- o CNPJ/CPF do beneficiário final, se estiver visível
 - o valor pago, sempre como número positivo
 - a forma de pagamento: BOLETO ou PIX — pelo título/contexto da lista, pela coluna, ou pelo formato do dado (chave pix vs código de barras/linha digitável de boleto)
 - o número do boleto ou identificador do comprovante, se estiver visível
