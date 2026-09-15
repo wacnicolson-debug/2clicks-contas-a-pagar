@@ -19,6 +19,7 @@ type PageDetail = {
   // pré-marcar a pergunta certa.
   knownPaymentMethod: Method | null;
   knownPixKey: string | null;
+  knownKind: Kind | null;
   installments: { amount: number; dueDate: string | null }[];
 };
 
@@ -48,6 +49,7 @@ export default function AnswerPage() {
         setDetail(data);
         if (data.knownPaymentMethod) setMethod(data.knownPaymentMethod);
         if (data.knownPixKey) setPixKey(data.knownPixKey);
+        if (data.knownKind) setKind(data.knownKind);
       });
     fetch(`/api/categories`)
       .then((res) => res.json())

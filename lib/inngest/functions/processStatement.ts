@@ -183,6 +183,10 @@ export const processStatement = inngest.createFunction(
               confidence: 1,
               notes: "Linha de extrato bancário sem nota correspondente.",
               duplicateOfPageNumber: null,
+              // Direção do extrato já diz se é dinheiro saindo (fornecedor) ou
+              // entrando (cliente) — evita nascer sempre em "Fornecedor" e
+              // obrigar o usuário a corrigir toda entrada manualmente.
+              knownKind: kind === "RECEIVABLE" ? "CLIENTE" : "FORNECEDOR",
             },
             supplierId: supplier.id,
             confidence: 1,

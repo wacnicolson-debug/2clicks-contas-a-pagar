@@ -40,6 +40,7 @@ export async function GET(
     // em "Boleto".
     knownPaymentMethod: extraction.knownPaymentMethod ?? null,
     knownPixKey: extraction.knownPixKey ?? null,
+    knownKind: extraction.knownKind ?? null,
     installments: extraction.installments.map((i) => ({
       amount: i.amount,
       dueDate: i.dueDate,

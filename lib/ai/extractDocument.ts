@@ -28,6 +28,10 @@ export type ExtractedPage = {
   knownPaymentMethod?: "BOLETO" | "PIX" | null;
   // Idem, pra chave pix já lida da própria relação de pagamentos.
   knownPixKey?: string | null;
+  // Preenchido só quando a origem já sabe se é Fornecedor ou Cliente (ex:
+  // direção do extrato bancário) — pré-marca a pergunta em vez de nascer
+  // sempre em "Fornecedor".
+  knownKind?: "FORNECEDOR" | "CLIENTE" | null;
 };
 
 const EXTRACTION_TOOL: Anthropic.Tool = {
