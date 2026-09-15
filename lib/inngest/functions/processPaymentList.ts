@@ -2,9 +2,40 @@ import { inngest } from "@/lib/inngest/client";
 import { NonRetriableError } from "inngest";
 import { prisma } from "@/lib/db/prisma";
 import { downloadDocumentFile } from "@/lib/storage/supabase";
-import { extractPaymentListLines } from "@/lib/ai/extractPaymentList";
+import { extractPaymentListLines, ExtractedPaymentLine } from "@/lib/ai/extractPaymentList";
 import { resolveSupplier, needsOnboardingQuestions } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
+import { normalizeText } from "@/lib/utils/normalizeText";
+
+// Chave de "impressão digital" de um pagamento: data+valor+favorecido
+// normalizado. Dois pagamentos iguais pro mesmo favorecido no mesmo dia (ex:
+// dois boletos de R$50 por motivos diferentes) são legítimos e não podem
+// virar "duplicata" um do outro — por isso a CONTAGEM de ocorrências (ver
+// buildAlreadyLaunchedFlags) importa tanto quanto a chave em si. Valores
+// baixos/redondos tornam essa coincidência bem mais provável.
+function paymentLineKey(date: string, amount: number, payeeNameRaw: string): string {
+  return `${date}|${amount.toFixed(2)}|${normalizeText(payeeNameRaw)}`;
+}
+
+// Marca como já lançada toda linha que já tem uma ocorrência correspondente
+// salva antes (nota lançada via Documentos, linha de relação processada
+// numa execução anterior, ou a mesma relação reenviada por engano) — sem
+// descartar repetições legítimas dentro do próprio arquivo (a Nª ocorrência
+// de uma chave só é duplicata da Nª ocorrência já existente no banco, não de
+// qualquer ocorrência anterior).
+function buildAlreadyLaunchedFlags(
+  lines: ExtractedPaymentLine[],
+  existingCounts: Map<string, number>
+): boolean[] {
+  const consumed = new Map<string, number>();
+  return lines.map((line) => {
+    const key = paymentLineKey(line.date, line.amount, line.payeeNameRaw);
+    const already = existingCounts.get(key) ?? 0;
+    const usedSoFar = consumed.get(key) ?? 0;
+    consumed.set(key, usedSoFar + 1);
+    return usedSoFar < already;
+  });
+}
 
 /**
  * Processa 1 relação de pagamentos já feitos ("Adicionar Relação de
@@ -50,10 +81,36 @@ export const processPaymentList = inngest.createFunction(
       );
     }
 
+    // Impressões digitais (data+valor+favorecido) já lançadas antes desta
+    // execução — carregado 1x, só pras datas que aparecem nesta lista, pra
+    // não varrer todo o histórico da empresa à toa.
+    const existingCounts = await step.run("load-existing-payment-fingerprints", async () => {
+      const dates = [...new Set(lines.map((l) => l.date))].map((d) => new Date(d));
+      const rows = await prisma.transaction.findMany({
+        where: { companyId: document.companyId, dueDate: { in: dates } },
+        select: { dueDate: true, amount: true, supplier: { select: { name: true } } },
+      });
+      const counts = new Map<string, number>();
+      for (const row of rows) {
+        const key = paymentLineKey(
+          row.dueDate.toISOString().slice(0, 10),
+          Number(row.amount),
+          row.supplier.name
+        );
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      return [...counts.entries()];
+    });
+    const alreadyLaunchedFlags = buildAlreadyLaunchedFlags(lines, new Map(existingCounts));
+
     let anyAwaitingInput = false;
 
-    for (const line of lines) {
+    for (const [index, line] of lines.entries()) {
       await step.run(`persist-line-${line.lineNumber}`, async () => {
+        if (alreadyLaunchedFlags[index]) {
+          return; // essa combinação (favorecido+data+valor) já foi lançada antes
+        }
+
         const lineDate = new Date(line.date);
 
         const supplier = await resolveSupplier({
@@ -61,22 +118,6 @@ export const processPaymentList = inngest.createFunction(
           nameRaw: line.payeeNameRaw,
           taxId: line.taxId,
         });
-
-        // Mesmo favorecido + mesma data + mesmo valor já lançado antes
-        // (nota lançada via "Adicionar Documentos", linha já processada de
-        // uma relação enviada antes, ou a mesma relação reenviada por
-        // engano) — não duplica, só ignora esta linha.
-        const alreadyLaunched = await prisma.transaction.findFirst({
-          where: {
-            companyId: document.companyId,
-            supplierId: supplier.id,
-            dueDate: lineDate,
-            amount: line.amount,
-          },
-        });
-        if (alreadyLaunched) {
-          return;
-        }
 
         const needsInput = needsOnboardingQuestions(supplier) || supplier.alwaysAskCategory;
 
