@@ -107,7 +107,7 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
 
 const SYSTEM_PROMPT = `Você lê relações/listas consolidadas de pagamentos já realizados por uma empresa brasileira — por exemplo, um relatório com vários boletos pagos, ou uma lista de pix enviados, cada linha/comprovante um pagamento diferente pra um favorecido diferente. NÃO é um extrato bancário (que traz todas as movimentações da conta) nem uma nota fiscal individual — é uma lista/tabela ou conjunto de comprovantes que o próprio usuário organizou com os pagamentos que ele já fez.
 
-Extraia TODO comprovante/linha da lista, na ordem em que aparecem. Para cada um, LEIA OS CAMPOS EXATAMENTE COMO APARECEM, sem decidir nem resumir nada — a extração é só leitura literal:
+Extraia TODO comprovante/linha da lista, na ordem em que aparecem. Trate CADA comprovante como uma tarefa própria, com calma — não corra pra terminar rápido, mesmo que existam dezenas deles no mesmo arquivo. Antes de preencher os campos de um comprovante, releia ele até o final (os comprovantes costumam ter, nessa ordem: Beneficiário, Pagador, Beneficiário final, Datas, Valores) — não pare de procurar assim que achar o "Beneficiário" genérico, o "Beneficiário final" normalmente vem DEPOIS dele no mesmo comprovante. Para cada um, LEIA OS CAMPOS EXATAMENTE COMO APARECEM, sem decidir nem resumir nada — a extração é só leitura literal:
 - a data em que o pagamento foi feito (formato AAAA-MM-DD)
 - o Nome/Razão Social e o CNPJ/CPF do campo "Beneficiário" (o principal do comprovante) — sempre preencha isso
 - SEPARADAMENTE, o Nome/Razão Social e o CNPJ/CPF do campo "Beneficiário final", SÓ SE esse campo existir escrito no comprovante como algo distinto do "Beneficiário" — é comum um boleto estar cedido/securitizado (o "Beneficiário" é uma cobrança/securitizadora/fundo, ex: "MULTIPLIKE SECURITIZADORA S.A.", "ATLANTA FUNDO INV D CRED N PAD", "O. A. ALVES COBRANCA E ASSESSORIA FINANC" — e o comprovante traz um "Beneficiário final" à parte com o fornecedor real). Se não existir esse campo separado no comprovante, deixe null — não invente nem repita o "Beneficiário" genérico aqui.
@@ -124,7 +124,7 @@ export async function extractPaymentListLines(params: {
 }): Promise<ExtractedPaymentLine[]> {
   const message = await client.messages.create({
     model: "claude-sonnet-5",
-    max_tokens: 8192,
+    max_tokens: 32000,
     system: SYSTEM_PROMPT,
     tools: [EXTRACTION_TOOL],
     tool_choice: { type: "tool", name: "record_payment_list_lines" },
