@@ -5,6 +5,7 @@ import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { rebuildCostSummaryTab } from "@/lib/sheets/rebuildCostSummary";
 import { normalizeText } from "@/lib/utils/normalizeText";
 import type { ExtractedPage } from "@/lib/ai/extractDocument";
+import type { Supplier } from "@prisma/client";
 
 type AnswerBody = {
   kind: "FORNECEDOR" | "CLIENTE";
@@ -205,7 +206,7 @@ export async function POST(
 }
 
 async function resolveOtherPendingPagesForSupplier(
-  supplier: { id: string; kind: string | null; defaultStatus: string | null; paymentMethod: string | null; pixKey: string | null; defaultCategoryId: string | null },
+  supplier: Supplier,
   createdByUserId: string
 ) {
   const otherPendingPages = await prisma.documentPage.findMany({
