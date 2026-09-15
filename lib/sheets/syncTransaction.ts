@@ -22,7 +22,7 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
 export async function syncTransactionToSheet(transactionId: string): Promise<void> {
   const transaction = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
-    include: { supplier: true, category: true, company: true },
+    include: { supplier: true, category: true, company: true, document: true },
   });
 
   if (!transaction.company.googleRefreshToken) {
@@ -44,8 +44,15 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   const startOfToday = new Date();
   startOfToday.setUTCHours(0, 0, 0, 0);
   const alreadyOverdue = dueDate < startOfToday;
+  // Lançamento vindo da "Relação de Pagamentos" (boletos/pix já pagos,
+  // importados em lote pra apurar custo de um período fechado) nunca deve
+  // ocupar linha na aba do mês — essa aba é a lista operacional de quem
+  // ainda vai pagar, e esse pagamento já é passado/fechado. Só entra no
+  // histórico oculto de custos, senão duplica contra o que já foi
+  // controlado manualmente na planilha (ou no fluxo normal) daquele mês.
+  const fromPaymentList = transaction.document?.kind === "PAYMENT_LIST";
 
-  if (transaction.paid && !alreadyOverdue) {
+  if (transaction.paid && (fromPaymentList || !alreadyOverdue)) {
     // Paga ANTES do vencimento (adiantada) não é mais "a pagar" — não ocupa
     // linha no fluxo de pagamentos do mês, só entra no histórico oculto que
     // alimenta a Classificação de Custos (sob o mês de costDate). Já vencida

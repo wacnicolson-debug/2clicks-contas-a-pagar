@@ -54,11 +54,29 @@ export const processPaymentList = inngest.createFunction(
 
     for (const line of lines) {
       await step.run(`persist-line-${line.lineNumber}`, async () => {
+        const lineDate = new Date(line.date);
+
         const supplier = await resolveSupplier({
           companyId: document.companyId,
           nameRaw: line.payeeNameRaw,
           taxId: line.taxId,
         });
+
+        // Mesmo favorecido + mesma data + mesmo valor já lançado antes
+        // (nota lançada via "Adicionar Documentos", linha já processada de
+        // uma relação enviada antes, ou a mesma relação reenviada por
+        // engano) — não duplica, só ignora esta linha.
+        const alreadyLaunched = await prisma.transaction.findFirst({
+          where: {
+            companyId: document.companyId,
+            supplierId: supplier.id,
+            dueDate: lineDate,
+            amount: line.amount,
+          },
+        });
+        if (alreadyLaunched) {
+          return;
+        }
 
         const needsInput = needsOnboardingQuestions(supplier) || supplier.alwaysAskCategory;
 
@@ -97,7 +115,7 @@ export const processPaymentList = inngest.createFunction(
             documentPageId: docPage.id,
             supplierId: supplier.id,
             amount: line.amount,
-            dueDate: new Date(line.date),
+            dueDate: lineDate,
             paymentStatus: "PAGO",
             paymentMethod: line.paymentMethod,
             pixKey: supplier.pixKey,
