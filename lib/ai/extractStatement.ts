@@ -99,8 +99,8 @@ export async function extractStatementLines(params: {
   // A IA às vezes volta com um campo obrigatório vazio/nulo pra alguma linha
   // (ou até pra "lines" inteiro) mesmo o schema pedindo o contrário — sem essa
   // validação, 1 linha ruim quebrava o processamento do extrato INTEIRO.
-  const lines = result.lines ?? [];
-  return lines.filter((line) => {
+  const rawLines = result.lines ?? [];
+  const validLines = rawLines.filter((line) => {
     const valid =
       Number.isFinite(line.amount) &&
       line.amount > 0 &&
@@ -115,4 +115,22 @@ export async function extractStatementLines(params: {
     }
     return valid;
   });
+
+  // Um extrato de verdade sempre tem pelo menos 1 movimentação — 0 linhas
+  // (aqui ou já na resposta bruta da IA) é sinal de algo errado, não um
+  // resultado válido. Em vez de "completar" silenciosamente sem lançar nada
+  // (o que parece só "não aconteceu nada" pra quem enviou), joga um erro
+  // com o que a IA realmente devolveu, pra dar pra investigar direto pelo
+  // Inngest sem precisar reproduzir o problema de novo.
+  if (validLines.length === 0) {
+    const textBlock = message.content.find((b): b is Anthropic.TextBlock => b.type === "text");
+    throw new Error(
+      `A IA não conseguiu ler nenhuma movimentação válida deste extrato. ` +
+        `Linhas brutas devolvidas: ${rawLines.length}. ` +
+        `Amostra: ${JSON.stringify(rawLines.slice(0, 2))}. ` +
+        `Texto adicional da IA: ${textBlock?.text?.slice(0, 500) ?? "(nenhum)"}`
+    );
+  }
+
+  return validLines;
 }
