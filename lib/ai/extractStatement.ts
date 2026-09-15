@@ -69,7 +69,7 @@ export async function extractStatementLines(params: {
 }): Promise<ExtractedStatementLine[]> {
   const message = await client.messages.create({
     model: "claude-sonnet-5",
-    max_tokens: 8192,
+    max_tokens: 64000,
     system: SYSTEM_PROMPT,
     tools: [EXTRACTION_TOOL],
     tool_choice: { type: "tool", name: "record_statement_lines" },
