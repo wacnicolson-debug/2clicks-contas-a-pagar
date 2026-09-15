@@ -9,6 +9,7 @@ type FileEntry = {
   file: File;
   status: FileStatus;
   error?: string;
+  duplicateDocumentId?: string;
 };
 
 const STATUS_LABEL: Record<FileStatus, string> = {
@@ -50,7 +51,11 @@ export default function PaymentListUploadPage() {
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
-          updateEntry(i, { status: "error", error: body.error ?? "Falha ao enviar." });
+          updateEntry(i, {
+            status: "error",
+            error: body.error ?? "Falha ao enviar.",
+            duplicateDocumentId: body.duplicateDocumentId,
+          });
           continue;
         }
         updateEntry(i, { status: "done" });
@@ -60,6 +65,24 @@ export default function PaymentListUploadPage() {
     }
 
     setSubmitting(false);
+  }
+
+  async function handleDeleteDuplicate(index: number) {
+    const documentId = entries[index].duplicateDocumentId;
+    if (!documentId) return;
+    if (
+      !confirm(
+        "Isso apaga o envio anterior desse arquivo (e qualquer lançamento que já tenha saído dele). Só faz isso se aquele envio foi um engano. Continuar?"
+      )
+    ) {
+      return;
+    }
+    const res = await fetch(`/api/documents/${documentId}`, { method: "DELETE" });
+    if (res.ok) {
+      updateEntry(index, { status: "pending", error: undefined, duplicateDocumentId: undefined });
+    } else {
+      alert("Não foi possível excluir o envio anterior. Tente de novo.");
+    }
   }
 
   const allFinished =
@@ -94,14 +117,19 @@ export default function PaymentListUploadPage() {
                   className="flex items-center justify-between gap-3 text-sm border border-neutral-100 rounded-md px-3 py-2"
                 >
                   <span className="truncate">{entry.file.name}</span>
-                  <span
-                    className={
-                      entry.status === "error"
-                        ? "text-red-600 shrink-0"
-                        : "text-neutral-500 shrink-0"
-                    }
-                  >
-                    {entry.status === "error" && entry.error ? entry.error : STATUS_LABEL[entry.status]}
+                  <span className="flex items-center gap-2 shrink-0">
+                    <span className={entry.status === "error" ? "text-red-600" : "text-neutral-500"}>
+                      {entry.status === "error" && entry.error ? entry.error : STATUS_LABEL[entry.status]}
+                    </span>
+                    {entry.duplicateDocumentId && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDuplicate(i)}
+                        className="text-xs text-emerald-700 underline whitespace-nowrap"
+                      >
+                        foi engano, excluir e reenviar
+                      </button>
+                    )}
                   </span>
                 </li>
               ))}

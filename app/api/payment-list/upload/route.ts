@@ -29,7 +29,10 @@ export async function POST(request: NextRequest) {
   });
   if (duplicate) {
     return NextResponse.json(
-      { error: `Esse arquivo já foi enviado antes (${duplicate.originalFilename}).` },
+      {
+        error: `Esse arquivo já foi enviado antes (${duplicate.originalFilename}).`,
+        duplicateDocumentId: duplicate.id,
+      },
       { status: 409 }
     );
   }
