@@ -73,7 +73,7 @@ const DAYS_IN_BLOCK = 31; // sempre reserva 31 dias, meses menores ficam com lin
 const HEADER_ROWS = 2; // título + cabeçalho de colunas
 
 export const COST_TAB = "Classificação de Custos";
-const RECEBIMENTOS_TAB = "Recebimentos";
+export const RECEBIMENTOS_TAB = "Recebimentos";
 
 // Histórico (oculto) de lançamentos já PAGOS — não entram no fluxo de "Contas
 // a Pagar" (abas de mês), porque essa aba é só pra obrigações ainda em

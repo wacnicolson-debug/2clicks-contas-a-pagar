@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
-import { PAID_LOG_TAB } from "./provisionCompanySheet";
+import { PAID_LOG_TAB, RECEBIMENTOS_TAB } from "./provisionCompanySheet";
 
 const ROWS_PER_DAY = 30;
 const HEADER_ROWS = 2; // título + cabeçalho, 0-based -> primeira linha de dado = índice 2
@@ -31,6 +31,27 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
     );
   }
   const googleRefreshToken = transaction.company.googleRefreshToken;
+
+  // Recebimento (Cliente/Receita) nunca teve lugar nas abas de mês — aquele
+  // layout é todo pensado pra "quem eu tenho que pagar" (blocos de 30 linhas
+  // por dia, coluna de forma de pagamento/pix do FORNECEDOR). Vai pra aba
+  // "Recebimentos" própria, num formato de lista simples (sem bloco de dia).
+  if (transaction.kind === "RECEIVABLE") {
+    const year = transaction.dueDate.getUTCFullYear();
+    const spreadsheetId = await getOrCreateCompanySheetForYear(transaction.companyId, year);
+    const cellRef = await writeReceivableRow({
+      companyId: transaction.companyId,
+      spreadsheetId,
+      year,
+      transaction,
+      googleRefreshToken,
+    });
+    await prisma.transaction.update({
+      where: { id: transaction.id },
+      data: { sheetSyncStatus: "SYNCED", sheetCellRef: cellRef, costLogCellRef: null },
+    });
+    return;
+  }
 
   const dueDate = transaction.dueDate;
   // Mês que o custo/receita conta na Classificação de Custos — o vencimento,
@@ -192,6 +213,61 @@ async function writeCostLogEntry(params: {
 }
 
 /**
+ * Grava 1 linha na aba "Recebimentos" — lista simples (sem bloco de 30
+ * linhas por dia como as abas de mês, cresce direto igual ao histórico de
+ * custos pagos). "Data recebida" e "Valor recebido" só vêm preenchidos
+ * quando o recebimento já foi marcado como Pago.
+ */
+async function writeReceivableRow(params: {
+  companyId: string;
+  spreadsheetId: string;
+  year: number;
+  transaction: {
+    id: string;
+    amount: unknown;
+    dueDate: Date;
+    paid: boolean;
+    description: string | null;
+    supplier: { name: string };
+    category: { name: string } | null;
+  };
+  googleRefreshToken: string;
+}): Promise<string> {
+  const { transaction } = params;
+  const rowIndex0 = await reserveNextLogRow({
+    companyId: params.companyId,
+    year: params.year,
+    tabName: RECEBIMENTOS_TAB,
+  });
+  const row1Based = rowIndex0 + 1;
+
+  const { sheets } = getGoogleClientsForCompany(params.googleRefreshToken);
+  const dueDateStr = transaction.dueDate.toISOString().slice(0, 10);
+  const amount = Number(transaction.amount);
+  const rowValues = [
+    dueDateStr,
+    transaction.paid ? dueDateStr : "",
+    transaction.supplier.name,
+    transaction.description ?? "",
+    transaction.category?.name ?? "",
+    "",
+    "",
+    amount,
+    transaction.paid ? amount : "",
+    "",
+  ];
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: params.spreadsheetId,
+    range: `'${RECEBIMENTOS_TAB}'!A${row1Based}:J${row1Based}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [rowValues] },
+  });
+
+  return `${RECEBIMENTOS_TAB}!A${row1Based}`;
+}
+
+/**
  * Remove a linha da planilha correspondente a um lançamento excluído — e
  * COMPACTA o resto do bloco do dia pra cima, pra nunca deixar um "buraco"
  * na linha-resumo (a 1ª do dia, que fica visível mesmo com o grupo recolhido).
@@ -254,6 +330,17 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     await sheetsClient.spreadsheets.values.clear({
       spreadsheetId,
       range: `'${PAID_LOG_TAB}'!A${deletedRow1}:F${deletedRow1}`,
+    });
+    return;
+  }
+
+  if (tabName === RECEBIMENTOS_TAB) {
+    // Mesmo raciocínio do histórico oculto — lista simples, sem bloco de dia
+    // pra compactar.
+    const { sheets: sheetsClient } = getGoogleClientsForCompany(transaction.company.googleRefreshToken);
+    await sheetsClient.spreadsheets.values.clear({
+      spreadsheetId,
+      range: `'${RECEBIMENTOS_TAB}'!A${deletedRow1}:J${deletedRow1}`,
     });
     return;
   }

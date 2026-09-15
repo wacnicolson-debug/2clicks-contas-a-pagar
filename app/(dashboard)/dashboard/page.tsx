@@ -155,6 +155,12 @@ export default async function DashboardPage({
             Adicionar Extrato
           </Link>
           <Link
+            href="/lancamentos/manual"
+            className="bg-white border border-neutral-300 text-neutral-700 rounded-md px-4 py-2 text-sm font-medium"
+          >
+            Lançamento Manual
+          </Link>
+          <Link
             href="/custos"
             className="bg-white border border-neutral-300 text-neutral-700 rounded-md px-4 py-2 text-sm font-medium"
           >
