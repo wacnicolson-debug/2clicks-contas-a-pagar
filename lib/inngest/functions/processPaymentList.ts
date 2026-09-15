@@ -134,6 +134,7 @@ export const processPaymentList = inngest.createFunction(
               confidence: 1,
               notes: `Pagamento (${line.paymentMethod}) lido de relação de pagamentos.`,
               duplicateOfPageNumber: null,
+              knownPaymentMethod: line.paymentMethod,
             },
             supplierId: supplier.id,
             confidence: 1,

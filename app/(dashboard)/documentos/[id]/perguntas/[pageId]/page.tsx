@@ -14,6 +14,9 @@ type PageDetail = {
   // Linha de extrato bancário sem nota correspondente — o dinheiro já se
   // moveu na conta, então não faz sentido perguntar "Pago ou a pagar?".
   fromStatement: boolean;
+  // Só vem preenchido quando a forma de pagamento já foi lida de uma
+  // relação de pagamentos — usado pra pré-marcar a pergunta certa.
+  knownPaymentMethod: Method | null;
   installments: { amount: number; dueDate: string | null }[];
 };
 
@@ -39,7 +42,10 @@ export default function AnswerPage() {
   useEffect(() => {
     fetch(`/api/documents/${params.id}/pages/${params.pageId}`)
       .then((res) => res.json())
-      .then(setDetail);
+      .then((data: PageDetail) => {
+        setDetail(data);
+        if (data.knownPaymentMethod) setMethod(data.knownPaymentMethod);
+      });
     fetch(`/api/categories`)
       .then((res) => res.json())
       .then((data) => setExistingCategories(data.names ?? []));

@@ -35,6 +35,10 @@ export async function GET(
     // Linha de extrato bancário ou de relação de pagamentos: o dinheiro já
     // se moveu na conta, então não faz sentido perguntar "Pago ou a pagar?".
     fromStatement: docPage.document.kind !== "INVOICES",
+    // Só vem preenchido quando a forma de pagamento já foi lida da própria
+    // relação de pagamentos — pré-marca a pergunta em vez de nascer sempre
+    // em "Boleto".
+    knownPaymentMethod: extraction.knownPaymentMethod ?? null,
     installments: extraction.installments.map((i) => ({
       amount: i.amount,
       dueDate: i.dueDate,

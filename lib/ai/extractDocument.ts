@@ -20,6 +20,12 @@ export type ExtractedPage = {
   // valor próprio (ex: detalhamento de imposto) da MESMA nota de uma página
   // anterior, aponta o número daquela página. Evita lançar a mesma nota 2x.
   duplicateOfPageNumber: number | null;
+  // Preenchido só quando a página veio de uma relação de pagamentos (onde a
+  // forma de pagamento já foi lida da própria lista) — usado pra pré-marcar
+  // a pergunta "Forma de pagamento" com o valor certo em vez de nascer
+  // sempre em "Boleto". Ausente/null nas notas normais, onde isso não é
+  // conhecido de antemão.
+  knownPaymentMethod?: "BOLETO" | "PIX" | null;
 };
 
 const EXTRACTION_TOOL: Anthropic.Tool = {
