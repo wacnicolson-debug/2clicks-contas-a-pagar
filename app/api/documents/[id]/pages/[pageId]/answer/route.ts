@@ -191,5 +191,81 @@ export async function POST(
     });
   }
 
+  // Esse mesmo fornecedor pode ter OUTRAS linhas pendentes da mesma leva (ex:
+  // vários pix pro mesmo favorecido numa relação de pagamentos — cada linha
+  // virou uma pergunta separada porque nenhuma sabia do perfil dele ainda).
+  // Agora que o perfil acabou de ser confirmado, resolve elas sozinho — só
+  // fica pendente o que realmente falta o usuário decidir (data, ou
+  // categoria pra fornecedor marcado como "muda de categoria nota a nota").
+  if (!supplier.alwaysAskCategory) {
+    await resolveOtherPendingPagesForSupplier(supplier, session.userId);
+  }
+
   return NextResponse.json({ ok: true });
+}
+
+async function resolveOtherPendingPagesForSupplier(
+  supplier: { id: string; kind: string | null; defaultStatus: string | null; paymentMethod: string | null; pixKey: string | null; defaultCategoryId: string | null },
+  createdByUserId: string
+) {
+  const otherPendingPages = await prisma.documentPage.findMany({
+    where: { supplierId: supplier.id, status: "AWAITING_USER_INPUT" },
+    include: { document: { select: { companyId: true } } },
+  });
+
+  const kindKey = supplier.kind === "CLIENTE" ? "RECEIVABLE" : "PAYABLE";
+
+  for (const page of otherPendingPages) {
+    const extraction = page.rawExtraction as unknown as ExtractedPage;
+    const missingDate = extraction.installments.some((i) => !i.dueDate);
+    if (missingDate) continue; // só o usuário sabe essa data, continua pendente
+
+    const createdIds: string[] = [];
+    for (const [index, installment] of extraction.installments.entries()) {
+      const transaction = await prisma.transaction.create({
+        data: {
+          companyId: page.document.companyId,
+          kind: kindKey,
+          documentId: page.documentId,
+          documentPageId: page.id,
+          supplierId: supplier.id,
+          amount: installment.amount,
+          dueDate: new Date(installment.dueDate!),
+          paymentStatus: supplier.kind === "FORNECEDOR" ? (supplier.defaultStatus ?? undefined) : undefined,
+          paymentMethod: supplier.kind === "FORNECEDOR" ? (supplier.paymentMethod ?? undefined) : undefined,
+          pixKey: supplier.kind === "FORNECEDOR" && supplier.paymentMethod === "PIX" ? supplier.pixKey : undefined,
+          categoryId: supplier.defaultCategoryId,
+          installmentIndex: extraction.installments.length > 1 ? index + 1 : null,
+          installmentTotal: extraction.installments.length > 1 ? extraction.installments.length : null,
+          noteNumber: extraction.noteNumber,
+          paid: supplier.kind === "FORNECEDOR" && supplier.defaultStatus === "PAGO",
+          createdByUserId,
+        },
+      });
+      createdIds.push(transaction.id);
+    }
+
+    for (const transactionId of createdIds) {
+      await syncTransactionToSheet(transactionId);
+    }
+
+    if (createdIds.length > 0) {
+      await prisma.bankStatementLine.updateMany({
+        where: { documentPageId: page.id },
+        data: { status: "CLASSIFIED", matchedTransactionId: createdIds[0] },
+      });
+    }
+
+    await prisma.documentPage.update({ where: { id: page.id }, data: { status: "DONE" } });
+
+    const remaining = await prisma.documentPage.count({
+      where: { documentId: page.documentId, status: { not: "DONE" } },
+    });
+    if (remaining === 0) {
+      await prisma.document.update({
+        where: { id: page.documentId },
+        data: { status: "DONE", processedAt: new Date() },
+      });
+    }
+  }
 }
