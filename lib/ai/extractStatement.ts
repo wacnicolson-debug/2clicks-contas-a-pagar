@@ -53,9 +53,13 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
 
 const SYSTEM_PROMPT = `Você lê extratos bancários brasileiros (PDF exportado do internet banking), com qualidade variável.
 
-Extraia TODA linha de movimentação do extrato, na ordem em que aparecem — inclusive tarifas pequenas, juros, IOF, estornos, qualquer coisa que mexeu no saldo. Não pule nada, mesmo que pareça pouco relevante: o objetivo é comparar depois com os lançamentos já registrados no sistema, então uma linha faltando quebra essa comparação.
+IGNORE movimentações de BOLETO PAGO e de PIX — essas já são conferidas por outro processo separado (uma relação de pagamentos), então incluí-las aqui só causaria duplicata. Reconheça esses padrões pelo texto do histórico, mesmo com variações de redação entre bancos:
+- Boleto: qualquer histórico tipo "DÉB.TIT.COMPE EFETIVADO", "PAGTO TÍTULO", "PAGAMENTO DE TÍTULO", "COMPENSAÇÃO DE TÍTULO", "LIQUIDAÇÃO DE BOLETO" — qualquer coisa mencionando título/boleto/compensação de cobrança.
+- Pix: qualquer histórico com "PIX" no texto (PIX ENVIADO, PIX RECEBIDO, TRANSF PIX, etc).
 
-Para cada linha, identifique:
+Extraia TODA outra linha de movimentação do extrato (tudo que NÃO for boleto/pix), na ordem em que aparecem — tarifas pequenas, juros, IOF, estornos, débito em conta, transferências (TED/DOC), saques, qualquer coisa que mexeu no saldo e não seja boleto/pix. Não pule nada dessas, mesmo que pareça pouco relevante: o objetivo é comparar depois com os lançamentos já registrados no sistema, então uma linha faltando quebra essa comparação.
+
+Para cada linha (que não seja boleto/pix), identifique:
 - a data (formato AAAA-MM-DD)
 - o texto do histórico/descrição exatamente como aparece (não resuma nem "traduza")
 - o valor, sempre como número positivo
