@@ -118,16 +118,31 @@ export const processStatement = inngest.createFunction(
         const lineDate = new Date(line.date);
         const kind = line.direction === "ENTRADA" ? "RECEIVABLE" : "PAYABLE";
 
-        const match = await prisma.transaction.findFirst({
+        // Casa por valor+direção exatos, mas com TOLERÂNCIA de alguns dias na
+        // data — um pagamento agendado pode ter sido lançado com a data do
+        // agendamento em vez da data real do débito (que é o que aparece
+        // aqui, no extrato), então exigir data idêntica deixava passar
+        // casamentos válidos. Valor é sempre exato (não tem por que variar);
+        // entre candidatos na janela, fica com o de data mais próxima.
+        const DATE_TOLERANCE_DAYS = 5;
+        const dayMs = 24 * 60 * 60 * 1000;
+        const candidates = await prisma.transaction.findMany({
           where: {
             companyId: document.companyId,
             kind,
-            dueDate: lineDate,
             amount: line.amount,
+            dueDate: {
+              gte: new Date(lineDate.getTime() - DATE_TOLERANCE_DAYS * dayMs),
+              lte: new Date(lineDate.getTime() + DATE_TOLERANCE_DAYS * dayMs),
+            },
             id: { notIn: [...usedTransactionIds] },
           },
-          orderBy: { createdAt: "asc" },
         });
+        const match = candidates.sort((a, b) => {
+          const diffA = Math.abs(a.dueDate.getTime() - lineDate.getTime());
+          const diffB = Math.abs(b.dueDate.getTime() - lineDate.getTime());
+          return diffA !== diffB ? diffA - diffB : a.createdAt.getTime() - b.createdAt.getTime();
+        })[0];
 
         if (match) {
           usedTransactionIds.add(match.id);

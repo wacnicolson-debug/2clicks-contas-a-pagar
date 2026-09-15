@@ -48,7 +48,8 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
             lineNumber: { type: "integer", description: "Número sequencial, começando em 1" },
             date: {
               type: "string",
-              description: "Data em que o pagamento foi feito, formato AAAA-MM-DD",
+              description:
+                "Data em que o dinheiro efetivamente saiu da conta, formato AAAA-MM-DD. MUITO IMPORTANTE: quando o comprovante trouxer MAIS DE UM campo de data (ex: 'Realizado' e 'Pagamento' separados — comum em pagamento agendado, onde o agendamento foi registrado num dia mas o débito de fato aconteceu em outro), use SEMPRE o campo 'Pagamento' (a data do débito em si), nunca 'Realizado' (que é só quando a ordem foi registrada/agendada). Essa data precisa bater exatamente com a data que aparece no extrato bancário depois — usar a data errada quebra a conciliação.",
             },
             beneficiaryNameRaw: {
               type: "string",
