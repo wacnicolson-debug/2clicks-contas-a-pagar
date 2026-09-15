@@ -156,14 +156,35 @@ export async function extractPaymentListLines(params: {
   // fornecedor real (o genérico é só o intermediário/cobrança/securitizadora
   // que recebeu o boleto cedido); senão, o "Beneficiário" genérico já é o
   // fornecedor de verdade.
-  return result.lines.map((line) => ({
-    lineNumber: line.lineNumber,
-    date: line.date,
-    payeeNameRaw: line.finalBeneficiaryNameRaw ?? line.beneficiaryNameRaw,
-    taxId: line.finalBeneficiaryTaxId ?? line.beneficiaryTaxId,
-    amount: line.amount,
-    paymentMethod: line.paymentMethod,
-    noteNumber: line.noteNumber,
-    pixKey: line.pixKey,
-  }));
+  //
+  // A IA às vezes não consegue ler um comprovante específico (página
+  // ilegível, corrompida, formato diferente) e volta com valor/data vazios
+  // mesmo o campo sendo obrigatório no schema — sem essa filtragem, 1 linha
+  // ruim quebrava o processamento do arquivo INTEIRO (nenhuma linha boa era
+  // lançada). Descarta só a linha problemática, deixa o resto seguir.
+  return result.lines
+    .filter((line) => {
+      const valid =
+        Number.isFinite(line.amount) &&
+        line.amount > 0 &&
+        !!line.date &&
+        !!(line.finalBeneficiaryNameRaw ?? line.beneficiaryNameRaw);
+      if (!valid) {
+        console.error(
+          `Linha ${line.lineNumber} da relação de pagamentos veio com dado inválido/ilegível, ignorada:`,
+          JSON.stringify(line)
+        );
+      }
+      return valid;
+    })
+    .map((line) => ({
+      lineNumber: line.lineNumber,
+      date: line.date,
+      payeeNameRaw: line.finalBeneficiaryNameRaw ?? line.beneficiaryNameRaw,
+      taxId: line.finalBeneficiaryTaxId ?? line.beneficiaryTaxId,
+      amount: line.amount,
+      paymentMethod: line.paymentMethod,
+      noteNumber: line.noteNumber,
+      pixKey: line.pixKey,
+    }));
 }
