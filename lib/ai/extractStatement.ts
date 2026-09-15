@@ -95,6 +95,24 @@ export async function extractStatementLines(params: {
     throw new Error("A IA não retornou dados estruturados para este extrato.");
   }
 
-  const result = toolUse.input as { lines: ExtractedStatementLine[] };
-  return result.lines;
+  const result = toolUse.input as { lines: ExtractedStatementLine[] | null | undefined };
+  // A IA às vezes volta com um campo obrigatório vazio/nulo pra alguma linha
+  // (ou até pra "lines" inteiro) mesmo o schema pedindo o contrário — sem essa
+  // validação, 1 linha ruim quebrava o processamento do extrato INTEIRO.
+  const lines = result.lines ?? [];
+  return lines.filter((line) => {
+    const valid =
+      Number.isFinite(line.amount) &&
+      line.amount > 0 &&
+      !!line.date &&
+      !!line.description &&
+      (line.direction === "SAIDA" || line.direction === "ENTRADA");
+    if (!valid) {
+      console.error(
+        `Linha ${line.lineNumber} do extrato veio com dado inválido/ilegível, ignorada:`,
+        JSON.stringify(line)
+      );
+    }
+    return valid;
+  });
 }

@@ -150,6 +150,22 @@ export async function extractDocumentPages(params: {
     throw new Error("A IA não retornou dados estruturados para este documento.");
   }
 
-  const result = toolUse.input as { pages: ExtractedPage[] };
-  return result.pages;
+  const result = toolUse.input as { pages: ExtractedPage[] | null | undefined };
+  // A IA às vezes volta com um campo obrigatório vazio/nulo pra alguma página
+  // (ou até pra "pages" inteiro) mesmo o schema pedindo o contrário — sem essa
+  // validação, 1 página ruim quebrava o processamento do arquivo INTEIRO.
+  const pages = result.pages ?? [];
+  return pages.filter((page) => {
+    const validInstallments =
+      Array.isArray(page.installments) &&
+      page.installments.every((i) => Number.isFinite(i.amount) && i.amount > 0);
+    const valid = !!page.supplierNameRaw && validInstallments;
+    if (!valid) {
+      console.error(
+        `Página ${page.pageNumber} veio com dado inválido/ilegível, ignorada:`,
+        JSON.stringify(page)
+      );
+    }
+    return valid;
+  });
 }
