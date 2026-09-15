@@ -67,7 +67,11 @@ export async function extractStatementLines(params: {
   fileBase64: string;
   mimeType: string;
 }): Promise<ExtractedStatementLine[]> {
-  const message = await client.messages.create({
+  // Streaming em vez de uma chamada bloqueante simples: com max_tokens alto
+  // (extratos de conta muito movimentada podem ter centenas de linhas), o
+  // SDK exige streaming pra operações que podem passar de 10 minutos —
+  // sem isso a chamada é recusada de cara, mesmo antes de gerar qualquer coisa.
+  const stream = client.messages.stream({
     model: "claude-sonnet-5",
     max_tokens: 64000,
     system: SYSTEM_PROMPT,
@@ -86,6 +90,7 @@ export async function extractStatementLines(params: {
       },
     ],
   });
+  const message = await stream.finalMessage();
 
   const toolUse = message.content.find(
     (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"

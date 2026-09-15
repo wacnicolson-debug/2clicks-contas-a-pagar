@@ -122,7 +122,10 @@ export async function extractPaymentListLines(params: {
   fileBase64: string;
   mimeType: string;
 }): Promise<ExtractedPaymentLine[]> {
-  const message = await client.messages.create({
+  // Streaming em vez de chamada bloqueante — com max_tokens alto (listas
+  // grandes de pagamentos), o SDK exige streaming pra operações que podem
+  // passar de 10 minutos, senão recusa a chamada de cara.
+  const stream = client.messages.stream({
     model: "claude-sonnet-5",
     max_tokens: 32000,
     system: SYSTEM_PROMPT,
@@ -141,6 +144,7 @@ export async function extractPaymentListLines(params: {
       },
     ],
   });
+  const message = await stream.finalMessage();
 
   const toolUse = message.content.find(
     (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
