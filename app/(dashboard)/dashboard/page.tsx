@@ -143,6 +143,12 @@ export default async function DashboardPage({
             Adicionar Documentos
           </Link>
           <Link
+            href="/pagamentos/upload"
+            className="bg-white border border-neutral-300 text-neutral-700 rounded-md px-4 py-2 text-sm font-medium"
+          >
+            Adicionar Relação de Pagamentos
+          </Link>
+          <Link
             href="/extrato/upload"
             className="bg-white border border-neutral-300 text-neutral-700 rounded-md px-4 py-2 text-sm font-medium"
           >

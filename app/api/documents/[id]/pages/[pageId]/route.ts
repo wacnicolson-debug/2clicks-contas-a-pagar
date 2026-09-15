@@ -32,9 +32,9 @@ export async function GET(
     // (ex: mão de obra normal vs hora extra, notas visualmente idênticas) —
     // pergunta a categoria de novo mesmo sem repetir o resto do perfil.
     needsCategory: !!docPage.supplier?.alwaysAskCategory,
-    // Linha de extrato bancário sem nota correspondente: o dinheiro já se
-    // moveu na conta, então não faz sentido perguntar "Pago ou a pagar?".
-    fromStatement: docPage.document.kind === "BANK_STATEMENT",
+    // Linha de extrato bancário ou de relação de pagamentos: o dinheiro já
+    // se moveu na conta, então não faz sentido perguntar "Pago ou a pagar?".
+    fromStatement: docPage.document.kind !== "INVOICES",
     installments: extraction.installments.map((i) => ({
       amount: i.amount,
       dueDate: i.dueDate,

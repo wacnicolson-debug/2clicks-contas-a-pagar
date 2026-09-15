@@ -127,6 +127,7 @@ enum DocumentStatus {
 enum DocumentKind {
   INVOICES
   BANK_STATEMENT
+  PAYMENT_LIST
 }
 
 // O arquivo enviado pelo usuário (PDF/imagem), pode conter várias páginas/notas.

@@ -18,7 +18,7 @@ const STATUS_LABEL: Record<FileStatus, string> = {
   error: "Falha",
 };
 
-export default function StatementUploadPage() {
+export default function PaymentListUploadPage() {
   const router = useRouter();
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -44,7 +44,7 @@ export default function StatementUploadPage() {
       formData.append("file", entries[i].file);
 
       try {
-        const res = await fetch("/api/statements/upload", {
+        const res = await fetch("/api/payment-list/upload", {
           method: "POST",
           body: formData,
         });
@@ -68,13 +68,12 @@ export default function StatementUploadPage() {
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10">
       <div className="max-w-md mx-auto bg-white border border-neutral-200 rounded-lg p-8">
-        <h1 className="text-lg font-semibold mb-1">Adicionar Extrato</h1>
+        <h1 className="text-lg font-semibold mb-1">Adicionar Relação de Pagamentos</h1>
         <p className="text-sm text-neutral-500 mb-6">
-          Suba o extrato bancário em PDF — o app compara com os lançamentos já
-          feitos (notas e relação de pagamentos) e aponta o que não bate
-          (juros, tarifas, Uber sem nota, etc) pra você classificar. Envie
-          isso por último — depois de já ter subido os boletos/notas e a
-          relação de pagamentos do período.
+          Suba uma lista/relatório com vários boletos pagos e/ou pix feitos (não
+          precisa ser um por um). Cada linha vira um lançamento já pago. Suba
+          isso ANTES do extrato — assim o extrato só aponta o que sobrar sem
+          bater com essa lista (juros, tarifas, algo sem nota).
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
