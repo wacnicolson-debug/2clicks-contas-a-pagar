@@ -34,11 +34,12 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
             payeeNameRaw: {
               type: "string",
               description:
-                "Nome do BENEFICIÁRIO FINAL/fornecedor real — se o documento trouxer tanto um 'Beneficiário' quanto um 'Beneficiário Final' (ou 'Cedente'/'Sacador' etc.) diferentes, use sempre o beneficiário final, exatamente como aparece.",
+                "REGRA OBRIGATÓRIA: se o comprovante tiver um campo rotulado 'Beneficiário final' (mesmo que também tenha um 'Beneficiário' genérico diferente), o valor deste campo é o que está em 'Beneficiário final', SEMPRE — nunca o 'Beneficiário' genérico. Exatamente como está escrito, sem 'corrigir' ou padronizar.",
             },
             taxId: {
               type: ["string", "null"],
-              description: "CNPJ ou CPF do favorecido, se estiver visível",
+              description:
+                "CNPJ ou CPF do BENEFICIÁRIO FINAL (o mesmo campo usado em payeeNameRaw), se estiver visível — nunca o CNPJ do 'Beneficiário' genérico quando os dois existirem.",
             },
             amount: { type: "number", description: "Valor pago, em reais, sempre positivo" },
             paymentMethod: {
@@ -77,10 +78,20 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
 
 const SYSTEM_PROMPT = `Você lê relações/listas consolidadas de pagamentos já realizados por uma empresa brasileira — por exemplo, um relatório com vários boletos pagos, ou uma lista de pix enviados, cada linha um pagamento diferente pra um favorecido diferente. NÃO é um extrato bancário (que traz todas as movimentações da conta) nem uma nota fiscal individual — é uma lista/tabela que o próprio usuário organizou com os pagamentos que ele já fez.
 
+ANTES de extrair qualquer linha, faça esta checagem em CADA comprovante/linha, nessa ordem:
+1. Existe um campo rotulado literalmente "Beneficiário final" (ou "Beneficiário Final")? Se sim, esse é o fornecedor — pare de procurar, use ele. Ignore completamente o "Beneficiário" genérico que apareceu antes dele no mesmo comprovante, mesmo que pareça o nome principal.
+2. Se NÃO existir um campo "Beneficiário final" separado, aí sim use o "Beneficiário"/"Favorecido" normal.
+
+Isso é essencial porque é MUITO comum um boleto estar cedido/securitizado: o "Beneficiário" genérico mostra uma cobrança/securitizadora/fundo (o intermediário que está cobrando), e não o fornecedor real. Exemplos REAIS desse padrão, pra você reconhecer o formato — nesses casos o nome certo é sempre o da linha "Beneficiário final", não o da linha "Beneficiário":
+- Beneficiário: "O. A. ALVES COBRANCA E ASSESSORIA FINANC" → Beneficiário final: "HUDTELFA TEXTIL LTDA" → fornecedor correto = HUDTELFA TEXTIL LTDA
+- Beneficiário: "ATLANTA FUNDO INV D CRED N PAD" → Beneficiário final: "NORTEX IND E COM S A EM RECUP" → fornecedor correto = NORTEX IND E COM S A EM RECUP
+- Beneficiário: "MULTIPLIKE SECURITIZADORA S.A." → (o beneficiário final, se houver, é o fornecedor correto — não a Multiplike)
+Nomes com "COBRANÇA", "ASSESSORIA", "SECURITIZADORA", "FUNDO INV", "FIDC", "FACTORING" no "Beneficiário" genérico são sinal forte de que existe um beneficiário final diferente em algum lugar do comprovante — procure com atenção antes de desistir.
+
 Extraia TODA linha da lista, na ordem em que aparecem. Para cada linha, identifique:
 - a data em que o pagamento foi feito (formato AAAA-MM-DD)
-- o nome do BENEFICIÁRIO FINAL — o fornecedor/credor real, não um intermediário financeiro. É MUITO COMUM um boleto ser cedido/securitizado: o campo "Beneficiário" genérico mostra uma securitizadora/cessionária (ex: "MULTIPLIKE SECURITIZADORA S.A.", fundos, factorings), mas o documento sempre traz também o beneficiário final — o fornecedor de verdade a quem o dinheiro é devido. Quando os dois aparecerem diferentes, use SEMPRE o beneficiário final, exatamente como está escrito (sem "corrigir" ou padronizar).
-- o CNPJ/CPF do beneficiário final, se estiver visível
+- o nome do fornecedor, seguindo a checagem acima (beneficiário final quando existir)
+- o CNPJ/CPF correspondente (do beneficiário final, quando existir), se estiver visível
 - o valor pago, sempre como número positivo
 - a forma de pagamento: BOLETO ou PIX — pelo título/contexto da lista, pela coluna, ou pelo formato do dado (chave pix vs código de barras/linha digitável de boleto)
 - o número do boleto ou identificador do comprovante, se estiver visível
