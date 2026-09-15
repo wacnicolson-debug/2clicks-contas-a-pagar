@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { LogoutButton } from "./logout-button";
 import { DeletePendingButton } from "./delete-pending-button";
+import { RemoveSheetButton } from "./remove-sheet-button";
 
 function startOfDay(d: Date) {
   const x = new Date(d);
@@ -88,15 +89,17 @@ export default async function DashboardPage({
         ) : (
           <div className="mb-8 flex flex-wrap gap-x-4 gap-y-1 text-sm">
             {company.sheets.map((sheet) => (
-              <a
-                key={sheet.id}
-                href={`https://docs.google.com/spreadsheets/d/${sheet.spreadsheetId}`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-emerald-700 underline"
-              >
-                Planilha {sheet.year} ↗
-              </a>
+              <span key={sheet.id} className="inline-flex items-center gap-1">
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${sheet.spreadsheetId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-emerald-700 underline"
+                >
+                  Planilha {sheet.year} ↗
+                </a>
+                <RemoveSheetButton id={sheet.id} year={sheet.year} />
+              </span>
             ))}
           </div>
         )}
