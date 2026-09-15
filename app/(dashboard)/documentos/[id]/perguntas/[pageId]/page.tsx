@@ -14,9 +14,11 @@ type PageDetail = {
   // Linha de extrato bancário sem nota correspondente — o dinheiro já se
   // moveu na conta, então não faz sentido perguntar "Pago ou a pagar?".
   fromStatement: boolean;
-  // Só vem preenchido quando a forma de pagamento já foi lida de uma
-  // relação de pagamentos — usado pra pré-marcar a pergunta certa.
+  // Só vem preenchido quando a forma de pagamento (e a chave pix, quando
+  // aplicável) já foram lidas de uma relação de pagamentos — usado pra
+  // pré-marcar a pergunta certa.
   knownPaymentMethod: Method | null;
+  knownPixKey: string | null;
   installments: { amount: number; dueDate: string | null }[];
 };
 
@@ -45,6 +47,7 @@ export default function AnswerPage() {
       .then((data: PageDetail) => {
         setDetail(data);
         if (data.knownPaymentMethod) setMethod(data.knownPaymentMethod);
+        if (data.knownPixKey) setPixKey(data.knownPixKey);
       });
     fetch(`/api/categories`)
       .then((res) => res.json())
@@ -359,11 +362,10 @@ export default function AnswerPage() {
                   </div>
                   {method === "PIX" && (
                     <input
-                      placeholder="Chave Pix"
+                      placeholder="Chave Pix (opcional)"
                       value={pixKey}
                       onChange={(e) => setPixKey(e.target.value)}
                       className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
-                      required
                     />
                   )}
                 </fieldset>

@@ -11,6 +11,7 @@ export type ExtractedPaymentLine = {
   amount: number;
   paymentMethod: "BOLETO" | "PIX";
   noteNumber: string | null; // número do boleto/comprovante, se visível
+  pixKey: string | null; // chave pix do favorecido, se estiver visível na lista (só faz sentido quando paymentMethod = PIX)
 };
 
 const EXTRACTION_TOOL: Anthropic.Tool = {
@@ -50,8 +51,22 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
               description:
                 "Número do boleto, código de barras ou identificador do comprovante, se estiver visível, ou null.",
             },
+            pixKey: {
+              type: ["string", "null"],
+              description:
+                "Chave pix do favorecido (CPF/CNPJ, e-mail, telefone ou chave aleatória), exatamente como aparece na lista, se estiver visível — só faz sentido quando paymentMethod é PIX. Null se não houver chave visível.",
+            },
           },
-          required: ["lineNumber", "date", "payeeNameRaw", "taxId", "amount", "paymentMethod", "noteNumber"],
+          required: [
+            "lineNumber",
+            "date",
+            "payeeNameRaw",
+            "taxId",
+            "amount",
+            "paymentMethod",
+            "noteNumber",
+            "pixKey",
+          ],
         },
       },
     },
@@ -68,6 +83,7 @@ Extraia TODA linha da lista, na ordem em que aparecem. Para cada linha, identifi
 - o valor pago, sempre como número positivo
 - a forma de pagamento: BOLETO ou PIX — pelo título/contexto da lista, pela coluna, ou pelo formato do dado (chave pix vs código de barras/linha digitável de boleto)
 - o número do boleto ou identificador do comprovante, se estiver visível
+- a chave pix do favorecido, se estiver visível na lista (só relevante quando a forma de pagamento é PIX)
 
 Todas as linhas desta lista já representam dinheiro que SAIU da conta (pagamento já realizado, não uma cobrança futura). Não invente dados que não estejam na lista. Ignore linhas que são só cabeçalho ou total.`;
 

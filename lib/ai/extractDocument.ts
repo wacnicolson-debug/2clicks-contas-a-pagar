@@ -26,6 +26,8 @@ export type ExtractedPage = {
   // sempre em "Boleto". Ausente/null nas notas normais, onde isso não é
   // conhecido de antemão.
   knownPaymentMethod?: "BOLETO" | "PIX" | null;
+  // Idem, pra chave pix já lida da própria relação de pagamentos.
+  knownPixKey?: string | null;
 };
 
 const EXTRACTION_TOOL: Anthropic.Tool = {

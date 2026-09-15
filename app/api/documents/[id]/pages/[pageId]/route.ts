@@ -39,6 +39,7 @@ export async function GET(
     // relação de pagamentos — pré-marca a pergunta em vez de nascer sempre
     // em "Boleto".
     knownPaymentMethod: extraction.knownPaymentMethod ?? null,
+    knownPixKey: extraction.knownPixKey ?? null,
     installments: extraction.installments.map((i) => ({
       amount: i.amount,
       dueDate: i.dueDate,
