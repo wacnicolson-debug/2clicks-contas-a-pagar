@@ -50,7 +50,7 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
             supplierNameRaw: {
               type: "string",
               description:
-                "Nome do fornecedor/emissor exatamente como aparece no documento — só o nome/razão social em si, nunca um número (nota fiscal, CNPJ, código de barras, linha digitável) que esteja perto dele no layout. Se o nome começar com algo que não é letra, releia com cuidado: provavelmente é um número vizinho colado por engano, não faz parte do nome.",
+                "Nome do fornecedor/emissor exatamente como aparece no documento — só o nome/razão social em si, nunca um número (nota fiscal, CNPJ, código de barras, linha digitável) que esteja perto dele no layout. REGRA: esse campo é sempre texto, nunca tem dígito nenhum — se o que você leu tem qualquer número junto (no início, no meio ou no fim), é sinal de que pegou um número vizinho por engano; releia e devolva só as letras do nome de verdade.",
             },
             taxId: {
               type: ["string", "null"],
