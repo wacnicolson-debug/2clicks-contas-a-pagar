@@ -96,6 +96,21 @@ export const processDocument = inngest.createFunction(
 
         // Fornecedor já conhecido: lança automático, sem perguntar de novo.
         for (const [index, installment] of page.installments.entries()) {
+          // Mesmo fornecedor + mesma data + mesmo valor já lançado antes (nota
+          // repetida num arquivo diferente, ou o próprio arquivo reenviado com
+          // outro nome/formato) — não duplica, só ignora essa parcela.
+          const alreadyLaunched = await prisma.transaction.findFirst({
+            where: {
+              companyId: document.companyId,
+              supplierId: supplier.id,
+              dueDate: new Date(installment.dueDate!),
+              amount: installment.amount,
+            },
+          });
+          if (alreadyLaunched) {
+            continue;
+          }
+
           const transaction = await prisma.transaction.create({
             data: {
               companyId: document.companyId,

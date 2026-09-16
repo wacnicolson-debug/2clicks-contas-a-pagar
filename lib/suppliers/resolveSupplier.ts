@@ -2,6 +2,10 @@ import { prisma } from "@/lib/db/prisma";
 import type { Supplier } from "@prisma/client";
 import { normalizeText as normalizeName } from "@/lib/utils/normalizeText";
 
+function firstWords(normalized: string, count: number): string {
+  return normalized.split(" ").slice(0, count).join(" ");
+}
+
 /**
  * Identifica o fornecedor/cliente a partir do que a IA leu no documento.
  * Casa primeiro por CNPJ/CPF (mais confiável), depois por nome normalizado.
@@ -39,6 +43,28 @@ export async function resolveSupplier(params: {
       });
     }
     return byName;
+  }
+
+  // Nome não bateu exato — mas a razão social do mesmo fornecedor costuma vir
+  // escrita de jeitos diferentes de documento pra documento ("Tear Têxtil
+  // Ltda" vs "TEAR TEXTIL INDUSTRIA E COMERCIO LTDA"). Casa pelas 2
+  // primeiras palavras do nome normalizado — geralmente já identifica a
+  // empresa sozinho — em vez de criar um cadastro duplicado.
+  const prefix = firstWords(normalizedName, 2);
+  if (prefix) {
+    const candidates = await prisma.supplier.findMany({
+      where: { companyId: params.companyId },
+    });
+    const byPrefix = candidates.find((c) => firstWords(c.normalizedName, 2) === prefix);
+    if (byPrefix) {
+      if (params.taxId && !byPrefix.taxId) {
+        return prisma.supplier.update({
+          where: { id: byPrefix.id },
+          data: { taxId: params.taxId },
+        });
+      }
+      return byPrefix;
+    }
   }
 
   return prisma.supplier.create({
