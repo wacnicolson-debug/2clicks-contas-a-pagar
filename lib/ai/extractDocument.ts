@@ -49,7 +49,8 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
             pageNumber: { type: "integer", description: "Número da página no PDF, começando em 1" },
             supplierNameRaw: {
               type: "string",
-              description: "Nome do fornecedor/emissor exatamente como aparece no documento",
+              description:
+                "Nome do fornecedor/emissor exatamente como aparece no documento — só o nome/razão social em si, nunca um número (nota fiscal, CNPJ, código de barras, linha digitável) que esteja perto dele no layout. Se o nome começar com algo que não é letra, releia com cuidado: provavelmente é um número vizinho colado por engano, não faz parte do nome.",
             },
             taxId: {
               type: ["string", "null"],
