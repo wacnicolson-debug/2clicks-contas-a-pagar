@@ -31,6 +31,8 @@ export default async function DashboardPage({
   const today = startOfDay(new Date());
   const tomorrow = new Date(today);
   tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const dayAfterTomorrow = new Date(tomorrow);
+  dayAfterTomorrow.setUTCDate(dayAfterTomorrow.getUTCDate() + 1);
   const in7Days = new Date(today);
   in7Days.setUTCDate(in7Days.getUTCDate() + 7);
   const in1Month = new Date(today);
@@ -39,7 +41,9 @@ export default async function DashboardPage({
   const [dueToday, dueTomorrow, due7Days, due1Month, expectedIncome, pendingPages] =
     await Promise.all([
       sumPayables(session.companyId, today, tomorrow),
-      sumPayables(session.companyId, tomorrow, in7Days),
+      // "Amanhã" é só o dia de amanhã (1 dia) — não de amanhã até 7 dias, que
+      // batia igualzinho com "Próximos 7 dias" e confundia o painel.
+      sumPayables(session.companyId, tomorrow, dayAfterTomorrow),
       sumPayables(session.companyId, today, in7Days),
       sumPayables(session.companyId, today, in1Month),
       sumReceivables(session.companyId, today, in1Month),
