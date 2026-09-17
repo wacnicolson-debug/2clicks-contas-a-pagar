@@ -41,6 +41,7 @@ export default async function LancamentosPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-neutral-50 text-left text-neutral-500 text-xs uppercase">
+                  <th className="px-4 py-2 font-medium"></th>
                   <th className="px-4 py-2 font-medium">Fornecedor/Cliente</th>
                   <th className="px-4 py-2 font-medium">Nº da nota</th>
                   <th className="px-4 py-2 font-medium">Vencimento</th>
@@ -53,6 +54,11 @@ export default async function LancamentosPage() {
               <tbody>
                 {transactions.map((t) => (
                   <tr key={t.id} className="border-t border-neutral-100">
+                    <td className="px-4 py-2">
+                      <Link href={`/lancamentos/${t.id}/editar`} className="text-sm text-emerald-700 hover:underline">
+                        Editar
+                      </Link>
+                    </td>
                     <td className="px-4 py-2">
                       {t.supplier.name}
                       <span className="text-neutral-400">
