@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
-import { PAID_LOG_TAB, RECEBIMENTOS_TAB } from "./provisionCompanySheet";
+import { PAID_LOG_TAB, RECEBIMENTOS_TAB, recebimentosMonthBlockRows } from "./provisionCompanySheet";
 import { toBRDateString } from "@/lib/utils/formatDateBR";
 
 const ROWS_PER_DAY = 30;
@@ -235,10 +235,10 @@ async function writeReceivableRow(params: {
   googleRefreshToken: string;
 }): Promise<string> {
   const { transaction } = params;
-  const rowIndex0 = await reserveNextLogRow({
+  const rowIndex0 = await reserveNextRecebimentoRow({
     companyId: params.companyId,
     year: params.year,
-    tabName: RECEBIMENTOS_TAB,
+    monthIndex0: transaction.dueDate.getUTCMonth(),
   });
   const row1Based = rowIndex0 + 1;
 
@@ -451,6 +451,61 @@ async function reserveNextRowForDay(params: {
         companyId: params.companyId,
         year: params.year,
         tabName: params.tabName,
+        key,
+        rowIndex: nextRow0 + 1,
+      },
+      update: { rowIndex: nextRow0 + 1 },
+    });
+
+    return nextRow0;
+  });
+}
+
+/**
+ * Reserva a próxima linha livre dentro do bloco do mês na aba Recebimentos
+ * (mesma ideia do reserveNextRowForDay, só que por mês em vez de por dia).
+ */
+async function reserveNextRecebimentoRow(params: {
+  companyId: string;
+  year: number;
+  monthIndex0: number; // 0 = Janeiro .. 11 = Dezembro
+}): Promise<number> {
+  const { dataStart0, dataEnd0 } = recebimentosMonthBlockRows(params.monthIndex0);
+  const key = `month-${params.monthIndex0}`;
+
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.sheetRowIndex.findUnique({
+      where: {
+        companyId_year_tabName_key: {
+          companyId: params.companyId,
+          year: params.year,
+          tabName: RECEBIMENTOS_TAB,
+          key,
+        },
+      },
+    });
+
+    const nextRow0 = existing ? existing.rowIndex : dataStart0;
+
+    if (nextRow0 >= dataEnd0) {
+      throw new Error(
+        `As linhas reservadas para o mês ${params.monthIndex0 + 1} de Recebimentos/${params.year} já estão cheias.`
+      );
+    }
+
+    await tx.sheetRowIndex.upsert({
+      where: {
+        companyId_year_tabName_key: {
+          companyId: params.companyId,
+          year: params.year,
+          tabName: RECEBIMENTOS_TAB,
+          key,
+        },
+      },
+      create: {
+        companyId: params.companyId,
+        year: params.year,
+        tabName: RECEBIMENTOS_TAB,
         key,
         rowIndex: nextRow0 + 1,
       },

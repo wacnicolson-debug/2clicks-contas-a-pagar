@@ -72,6 +72,10 @@ const ROWS_PER_DAY = 30;
 const DAYS_IN_BLOCK = 31; // sempre reserva 31 dias, meses menores ficam com linhas sobrando
 const HEADER_ROWS = 2; // título + cabeçalho de colunas
 
+// Linhas reservadas por mês na aba Recebimentos — folga generosa (bem mais
+// que o volume normal de vendas/mês), mesma ideia do ROWS_PER_DAY acima.
+export const RECEBIMENTOS_ROWS_PER_MONTH = 80;
+
 export const COST_TAB = "Classificação de Custos";
 export const RECEBIMENTOS_TAB = "Recebimentos";
 
@@ -130,12 +134,8 @@ export async function provisionCompanySheet(
     structuralRequests.push(...buildMonthStructuralRequests(sheetIdMap[month]));
   }
 
-  valueRanges.push(buildRecebimentosValues());
-  valueRanges.push(buildRecebimentosSummaryValues(year));
-  structuralRequests.push(
-    ...buildSimpleHeaderStructuralRequests(sheetIdMap[RECEBIMENTOS_TAB]),
-    ...buildRecebimentosSummaryStructuralRequests(sheetIdMap[RECEBIMENTOS_TAB])
-  );
+  valueRanges.push(buildRecebimentosValues(year));
+  structuralRequests.push(...buildRecebimentosStructuralRequests(sheetIdMap[RECEBIMENTOS_TAB]));
 
   valueRanges.push(buildPaidLogValues());
   structuralRequests.push(...buildPaidLogStructuralRequests(sheetIdMap[PAID_LOG_TAB]));
@@ -283,106 +283,125 @@ function buildMonthStructuralRequests(
   return requests;
 }
 
-// ---------- Aba Recebimentos ----------
+// ---------- Aba Recebimentos (agrupada por mês, com total no final de cada bloco) ----------
 
-function buildRecebimentosValues(): sheets_v4.Schema$ValueRange {
+// Linha (0-based) onde cada bloco de mês começa/termina, pra ficar igual em
+// todo lugar que precisa escrever ou formatar essa aba (aqui, na gravação de
+// cada recebimento e no rebuild de planilha antiga).
+export function recebimentosMonthBlockRows(monthIndex0: number): {
+  labelRow0: number;
+  dataStart0: number;
+  dataEnd0: number; // exclusivo
+  totalRow0: number;
+} {
+  const blockSize = 1 + RECEBIMENTOS_ROWS_PER_MONTH + 1; // rótulo do mês + dados + total
+  const labelRow0 = HEADER_ROWS + monthIndex0 * blockSize;
+  const dataStart0 = labelRow0 + 1;
+  const dataEnd0 = dataStart0 + RECEBIMENTOS_ROWS_PER_MONTH;
+  return { labelRow0, dataStart0, dataEnd0, totalRow0: dataEnd0 };
+}
+
+export function buildRecebimentosValues(year: number): sheets_v4.Schema$ValueRange {
+  const rows: (string | number)[][] = [];
+  rows.push([`CONTROLE DE RECEBIMENTOS — ${year}`]);
+  rows.push(RECEBIMENTOS_HEADERS);
+
+  for (const month of MONTHS) {
+    rows.push([month.toUpperCase()]);
+    for (let i = 0; i < RECEBIMENTOS_ROWS_PER_MONTH; i++) {
+      rows.push(["", "", "", "", "", "", "", "", "", ""]);
+    }
+    const dataEnd1 = rows.length;
+    const dataStart1 = dataEnd1 - RECEBIMENTOS_ROWS_PER_MONTH + 1;
+    rows.push([
+      "TOTAL DO MÊS",
+      "",
+      "",
+      "",
+      "",
+      "",
+      "",
+      `=IF(COUNTA(H${dataStart1}:H${dataEnd1})=0;"";SUM(H${dataStart1}:H${dataEnd1}))`,
+      `=IF(COUNTA(I${dataStart1}:I${dataEnd1})=0;"";SUM(I${dataStart1}:I${dataEnd1}))`,
+      "",
+    ]);
+  }
+
   return {
     range: `'${RECEBIMENTOS_TAB}'!A1`,
-    values: [["CONTROLE DE RECEBIMENTOS"], RECEBIMENTOS_HEADERS],
-  };
-}
-
-function buildSimpleHeaderStructuralRequests(
-  sheetId: number
-): sheets_v4.Schema$Request[] {
-  return commonHeaderFormatting(sheetId, RECEBIMENTOS_HEADERS.length);
-}
-
-// Bloco de resumo mensal (soma do que foi vendido em cada mês), ao lado da
-// lista de recebimentos, nas colunas L/M — SUMIFS sobre a data prevista
-// (coluna A) e o valor previsto (coluna H) da própria lista.
-const SUMMARY_MONTH_COLUMN = "L";
-const SUMMARY_VALUE_COLUMN = "M";
-
-export function buildRecebimentosSummaryValues(year: number): sheets_v4.Schema$ValueRange {
-  const rows: (string | number)[][] = [];
-  rows.push([`RESUMO MENSAL DE VENDAS — ${year}`]);
-  rows.push(["Mês", "Total vendido"]);
-
-  MONTHS.forEach((month, index) => {
-    const monthNumber = index + 1;
-    const nextMonthNumber = monthNumber === 12 ? 1 : monthNumber + 1;
-    const nextYear = monthNumber === 12 ? year + 1 : year;
-    const formula =
-      `=SUMIFS('${RECEBIMENTOS_TAB}'!$H$3:$H$100000;` +
-      `'${RECEBIMENTOS_TAB}'!$A$3:$A$100000;">="&DATE(${year};${monthNumber};1);` +
-      `'${RECEBIMENTOS_TAB}'!$A$3:$A$100000;"<"&DATE(${nextYear};${nextMonthNumber};1))`;
-    rows.push([month, formula]);
-  });
-
-  rows.push([
-    "TOTAL DO ANO",
-    `=SUM(${SUMMARY_VALUE_COLUMN}3:${SUMMARY_VALUE_COLUMN}14)`,
-  ]);
-
-  return {
-    range: `'${RECEBIMENTOS_TAB}'!${SUMMARY_MONTH_COLUMN}1`,
     values: rows,
   };
 }
 
-export function buildRecebimentosSummaryStructuralRequests(
+export function buildRecebimentosStructuralRequests(
   sheetId: number
 ): sheets_v4.Schema$Request[] {
-  const startColumnIndex = 11; // L
-  const endColumnIndex = 13; // M, exclusivo
+  const requests: sheets_v4.Schema$Request[] = [];
+  requests.push(...commonHeaderFormatting(sheetId, RECEBIMENTOS_HEADERS.length));
 
-  return [
-    {
-      mergeCells: {
-        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex, endColumnIndex },
-        mergeType: "MERGE_ALL",
-      },
+  // Formato de moeda nas colunas Valor previsto (H, índice 7) e Valor recebido (I, índice 8)
+  requests.push({
+    repeatCell: {
+      range: { sheetId, startRowIndex: HEADER_ROWS, startColumnIndex: 7, endColumnIndex: 9 },
+      cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: '"R$" #,##0.00' } } },
+      fields: "userEnteredFormat.numberFormat",
     },
-    {
+  });
+
+  MONTHS.forEach((_month, monthIndex0) => {
+    const { labelRow0, dataStart0, dataEnd0, totalRow0 } = recebimentosMonthBlockRows(monthIndex0);
+
+    requests.push({
       repeatCell: {
-        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex, endColumnIndex },
+        range: {
+          sheetId,
+          startRowIndex: labelRow0,
+          endRowIndex: labelRow0 + 1,
+          startColumnIndex: 0,
+          endColumnIndex: RECEBIMENTOS_HEADERS.length,
+        },
         cell: {
           userEnteredFormat: {
-            textFormat: { bold: true, fontSize: 12 },
-            backgroundColor: { red: 0.16, green: 0.28, blue: 0.24 },
+            textFormat: { bold: true },
+            backgroundColor: { red: 0.93, green: 0.95, blue: 0.94 },
           },
         },
         fields: "userEnteredFormat(textFormat,backgroundColor)",
       },
-    },
-    {
+    });
+
+    requests.push({
       repeatCell: {
-        range: { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex, endColumnIndex },
+        range: {
+          sheetId,
+          startRowIndex: totalRow0,
+          endRowIndex: totalRow0 + 1,
+          startColumnIndex: 0,
+          endColumnIndex: RECEBIMENTOS_HEADERS.length,
+        },
         cell: { userEnteredFormat: { textFormat: { bold: true } } },
         fields: "userEnteredFormat.textFormat",
       },
-    },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 2, endRowIndex: 14, startColumnIndex: 12, endColumnIndex },
-        cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: '"R$" #,##0.00' } } },
-        fields: "userEnteredFormat.numberFormat",
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 14, endRowIndex: 15, startColumnIndex, endColumnIndex },
-        cell: {
-          userEnteredFormat: {
-            textFormat: { bold: true },
-            numberFormat: { type: "CURRENCY", pattern: '"R$" #,##0.00' },
-          },
-        },
-        fields: "userEnteredFormat(textFormat,numberFormat)",
-      },
-    },
-  ];
+    });
+
+    // Linhas de dados do mês ficam agrupadas e recolhidas por padrão — só o
+    // rótulo do mês e o total ficam sempre visíveis.
+    const range: sheets_v4.Schema$DimensionRange = {
+      sheetId,
+      dimension: "ROWS",
+      startIndex: dataStart0,
+      endIndex: dataEnd0,
+    };
+    requests.push({ addDimensionGroup: { range } });
+    requests.push({
+      updateDimensionGroup: { dimensionGroup: { range, depth: 1, collapsed: true }, fields: "collapsed" },
+    });
+    requests.push({
+      updateDimensionProperties: { range, properties: { hiddenByUser: true }, fields: "hiddenByUser" },
+    });
+  });
+
+  return requests;
 }
 
 // ---------- Aba Custos Pagos (histórico oculto, insumo da Classificação de Custos) ----------

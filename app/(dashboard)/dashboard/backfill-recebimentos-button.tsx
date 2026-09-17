@@ -16,7 +16,7 @@ export function BackfillRecebimentosButton() {
       onClick={handleClick}
       disabled={status === "loading"}
       className="bg-white border border-neutral-300 text-neutral-700 rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50"
-      title="Corrige datas para o padrão brasileiro e adiciona o resumo mensal na aba Recebimentos"
+      title="Reorganiza a aba Recebimentos por mês (com total no final de cada mês) e corrige as datas pro padrão brasileiro"
     >
       {status === "loading"
         ? "Corrigindo..."

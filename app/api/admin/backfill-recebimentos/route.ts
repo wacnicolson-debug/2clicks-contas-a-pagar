@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
-import { backfillRecebimentosForCompanySheet } from "@/lib/sheets/backfillRecebimentos";
+import { rebuildRecebimentosTab } from "@/lib/sheets/backfillRecebimentos";
 
-// Corrige as planilhas já existentes da empresa logada (datas da aba
-// Recebimentos em padrão ISO -> BR, e adiciona o resumo mensal de vendas).
-// Planilhas novas já nascem certas — ver provisionCompanySheet.ts.
+// Reconstrói a aba Recebimentos das planilhas já existentes da empresa
+// logada (agrupada por mês, com total no final de cada bloco, e datas em
+// padrão BR). Planilhas novas já nascem certas — ver provisionCompanySheet.ts.
 export async function POST() {
   const session = await getSession();
   if (!session) {
@@ -23,12 +23,13 @@ export async function POST() {
 
   const results = [];
   for (const sheet of company.sheets) {
-    const { datesFixed } = await backfillRecebimentosForCompanySheet({
+    const { transactionsPlaced } = await rebuildRecebimentosTab({
+      companyId: session.companyId,
       spreadsheetId: sheet.spreadsheetId,
       year: sheet.year,
       googleRefreshToken: company.googleRefreshToken,
     });
-    results.push({ year: sheet.year, datesFixed });
+    results.push({ year: sheet.year, transactionsPlaced });
   }
 
   return NextResponse.json({ ok: true, results });
