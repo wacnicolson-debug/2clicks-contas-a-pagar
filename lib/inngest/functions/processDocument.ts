@@ -141,14 +141,19 @@ export const processDocument = inngest.createFunction(
               supplierId: supplier.id,
               amount: installment.amount,
               dueDate: new Date(installment.dueDate!), // garantido acima (needsInput cobre data faltante)
-              paymentStatus: supplier.defaultStatus ?? undefined,
+              // "Pago" não é um traço estável do fornecedor como a categoria
+              // é — é um fato de cada cobrança específica. Uma nota nova
+              // lançada automático (fornecedor já conhecido) é sempre uma
+              // obrigação nova, nunca deve nascer marcada como já paga só
+              // porque uma nota ANTERIOR desse fornecedor foi.
+              paymentStatus: "A_PAGAR",
               paymentMethod: supplier.paymentMethod ?? undefined,
               pixKey: supplier.pixKey,
               categoryId: supplier.defaultCategoryId,
               installmentIndex: page.installments.length > 1 ? index + 1 : null,
               installmentTotal: page.installments.length > 1 ? page.installments.length : null,
               noteNumber: page.noteNumber,
-              paid: supplier.defaultStatus === "PAGO",
+              paid: false,
               createdByUserId: document.uploadedById,
             },
           });
