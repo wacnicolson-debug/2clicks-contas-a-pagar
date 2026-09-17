@@ -113,7 +113,11 @@ const SYSTEM_PROMPT = `Você lê documentos financeiros brasileiros (notas fisca
 Cada página do arquivo é, EM PRINCÍPIO, um documento financeiro diferente. Para cada página, identifique:
 - quem é o fornecedor/emissor (o nome exatamente como aparece, sem tentar "corrigir" ou padronizar)
 
-MUITO IMPORTANTE — guia de recolhimento (DARF, GPS/INSS, GUIA DE FGTS, GRU e similares): nesses documentos a empresa que está pagando é a CONTRIBUINTE, não o fornecedor — o "fornecedor" nesse caso é o TIPO da guia, não o nome da empresa. Em "supplierNameRaw" escreva o tipo da guia (ex: "GUIA DE FGTS", "DARF", "GPS/INSS"), NUNCA o nome da empresa contribuinte/pagadora. Isso é essencial: se a IA usar o nome da própria empresa como fornecedor, um FGTS e um DARF (impostos completamente diferentes) viram o "mesmo fornecedor" e herdam a categoria um do outro por engano — cada tipo de guia precisa ficar separado.
+REGRA MAIS IMPORTANTE DE TODAS — NUNCA extraia "GLM CONFECÇÕES LTDA" (nem variações de grafia/acentuação/maiúscula desse nome) como fornecedor/cliente em "supplierNameRaw". É a própria empresa dona deste sistema — ela pode aparecer no documento em qualquer papel (como contribuinte pagando uma guia, como emitente de uma nota fiscal de venda, como sacado/pagador de um boleto, etc.), mas NUNCA é ela mesma quem deve ser lançada. Sempre que o nome dela aparecer, procure a OUTRA parte do documento — é essa outra parte que é o fornecedor ou cliente de verdade:
+- Guia de recolhimento (DARF, GPS/INSS, GUIA DE FGTS, GRU e similares): a GLM é a contribuinte/pagadora — nesse caso não tem uma "outra empresa" pra extrair, então use o TIPO da guia como fornecedor (ex: "GUIA DE FGTS", "DARF", "GPS/INSS"). Isso também evita que um FGTS e um DARF (impostos diferentes) virem "o mesmo fornecedor" e herdem categoria um do outro.
+- Nota fiscal de VENDA emitida pela própria GLM (GLM aparece como emitente): o fornecedor/cliente é o DESTINATÁRIO da nota (quem comprou), não a GLM.
+- Boleto em que a GLM é a pagadora/sacada: o fornecedor é o BENEFICIÁRIO do boleto (quem recebe), não a GLM.
+- Se depois de procurar não sobrar nenhuma outra parte identificável no documento, só então use algo descritivo do próprio documento (nunca o nome da GLM).
 - o CNPJ/CPF, se estiver visível
 - o número da nota fiscal, fatura ou boleto, se estiver visível (exatamente como aparece, ou null se não achar)
 - o(s) valor(es) e a(s) respectiva(s) data(s) de vencimento — um documento pode ter mais de uma parcela/vencimento
