@@ -32,6 +32,16 @@ export type ExtractedPage = {
   // direção do extrato bancário) — pré-marca a pergunta em vez de nascer
   // sempre em "Fornecedor".
   knownKind?: "FORNECEDOR" | "CLIENTE" | null;
+  // Sentido da nota fiscal, quando dá pra saber pela própria nota (GLM como
+  // emitente = venda, GLM como destinatária = compra). Existe pra pegar o
+  // caso de uma empresa que é fornecedora E cliente ao mesmo tempo (compra
+  // de um lado, vende do outro) — sem isso, uma nota nova sempre herdava o
+  // sentido aprendido antes, mesmo quando essa nota específica é o oposto.
+  documentDirection?: "COMPRA" | "VENDA" | null;
+  // Calculado no processamento (não pela IA): true quando documentDirection
+  // bateu diferente do perfil já salvo do fornecedor — sinaliza que essa
+  // pergunta é um "confirma de novo" e não deve sobrescrever o perfil.
+  directionConflict?: boolean;
 };
 
 const EXTRACTION_TOOL: Anthropic.Tool = {
@@ -90,6 +100,12 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
               description:
                 "Preencha com o número de uma página ANTERIOR se esta página for a mesma nota fiscal/fatura repetida — 2ª via, 3ª via, folha de continuação (ex: 'folha 2/2'), ou um anexo sem valor de cobrança próprio (ex: detalhamento de imposto/discriminação de serviço da mesma nota). Deixe null se esta página é uma nota/cobrança que ainda não apareceu antes no arquivo.",
             },
+            documentDirection: {
+              type: ["string", "null"],
+              enum: ["COMPRA", "VENDA", null],
+              description:
+                "SÓ para nota fiscal (NF-e/DANFE): 'VENDA' se a GLM aparecer como EMITENTE (ela vendeu), 'COMPRA' se a GLM aparecer como DESTINATÁRIA (ela comprou). null pra qualquer outro tipo de documento (boleto, guia, recibo) onde essa distinção emitente/destinatário não se aplica do mesmo jeito.",
+            },
           },
           required: [
             "pageNumber",
@@ -100,6 +116,7 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
             "confidence",
             "notes",
             "duplicateOfPageNumber",
+            "documentDirection",
           ],
         },
       },
@@ -122,6 +139,7 @@ REGRA MAIS IMPORTANTE DE TODAS — NUNCA extraia "GLM CONFECÇÕES LTDA" (nem va
 - o número da nota fiscal, fatura ou boleto, se estiver visível (exatamente como aparece, ou null se não achar)
 - o(s) valor(es) e a(s) respectiva(s) data(s) de vencimento — um documento pode ter mais de uma parcela/vencimento
 - uma nota de confiança da sua leitura
+- SÓ para nota fiscal (NF-e/DANFE): preencha "documentDirection" com "VENDA" se a GLM aparecer como EMITENTE (campo "Emitente" ou o cabeçalho da nota — ela vendeu), ou "COMPRA" se a GLM aparecer como DESTINATÁRIO/REMETENTE (ela comprou). Deixe null pra qualquer outro tipo de documento (boleto, guia, recibo) — essa distinção emitente/destinatário só vale pra nota fiscal.
 
 Não invente dados que não estejam no documento. Se não achar uma data de vencimento, retorne null nesse campo em vez de adivinhar.
 

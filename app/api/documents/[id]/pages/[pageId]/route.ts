@@ -25,9 +25,16 @@ export async function GET(
 
   const extraction = docPage.rawExtraction as unknown as ExtractedPage;
 
+  // Fornecedor que compra E vende (perfil salvo bate diferente do sentido
+  // desta nota específica): trata como "não conhecido" só pra essa pergunta
+  // reaparecer, sem repetir a onboarding inteira de categoria/pagamento —
+  // ver directionConflict, calculado no processamento.
+  const directionConflict = !!extraction.directionConflict;
+
   return NextResponse.json({
     supplierName: docPage.supplier?.name ?? extraction.supplierNameRaw,
-    supplierKnown: !!docPage.supplier?.kind,
+    supplierKnown: !!docPage.supplier?.kind && !directionConflict,
+    directionConflict,
     // Exceção: fornecedor já conhecido, mas a categoria muda nota a nota
     // (ex: mão de obra normal vs hora extra, notas visualmente idênticas) —
     // pergunta a categoria de novo mesmo sem repetir o resto do perfil.

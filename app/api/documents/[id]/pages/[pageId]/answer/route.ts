@@ -75,24 +75,42 @@ export async function POST(
     categoryId = category.id;
   }
 
-  // Grava o "perfil aprendido" do fornecedor — a partir da próxima nota,
-  // isso é aplicado automaticamente, sem perguntar de novo. Campos não
-  // enviados (undefined) simplesmente não mudam o que já estava salvo —
-  // é assim que cobrimos o caso "fornecedor já conhecido, só falta a data".
-  const supplier = await prisma.supplier.update({
-    where: { id: docPage.supplierId! },
-    data: {
-      kind: body.kind,
-      defaultStatus: body.kind === "FORNECEDOR" ? body.paymentStatus : undefined,
-      paymentMethod: body.kind === "FORNECEDOR" ? body.paymentMethod : undefined,
-      pixKey: body.kind === "FORNECEDOR" && body.paymentMethod === "PIX" ? body.pixKey : undefined,
-      defaultCategoryId: categoryId,
-      alwaysAskCategory: body.alwaysAskCategory,
-    },
-  });
-
   const extraction = docPage.rawExtraction as unknown as ExtractedPage;
-  const kindKey = supplier.kind === "CLIENTE" ? "RECEIVABLE" : "PAYABLE";
+
+  // Esse fornecedor compra E vende (o sentido lido nesta nota bate diferente
+  // do perfil já salvo) — não grava por cima do perfil, senão a próxima
+  // compra de verdade dele viria errada. Usa a resposta só pra ESTE
+  // lançamento, deixando o cadastro do fornecedor intocado.
+  const directionConflict = !!extraction.directionConflict;
+
+  const supplier = directionConflict
+    ? docPage.supplier
+    : await prisma.supplier.update({
+        // Grava o "perfil aprendido" do fornecedor — a partir da próxima nota,
+        // isso é aplicado automaticamente, sem perguntar de novo. Campos não
+        // enviados (undefined) simplesmente não mudam o que já estava salvo —
+        // é assim que cobrimos o caso "fornecedor já conhecido, só falta a data".
+        where: { id: docPage.supplierId! },
+        data: {
+          kind: body.kind,
+          defaultStatus: body.kind === "FORNECEDOR" ? body.paymentStatus : undefined,
+          paymentMethod: body.kind === "FORNECEDOR" ? body.paymentMethod : undefined,
+          pixKey: body.kind === "FORNECEDOR" && body.paymentMethod === "PIX" ? body.pixKey : undefined,
+          defaultCategoryId: categoryId,
+          alwaysAskCategory: body.alwaysAskCategory,
+        },
+      });
+
+  // Em conflito de sentido, usa exatamente o que foi respondido agora pra
+  // este lançamento (não o que já estava salvo no perfil, que é do sentido
+  // oposto); no caso normal, os dois já são a mesma coisa.
+  const effectiveKind = directionConflict ? body.kind : supplier.kind;
+  const effectivePaymentStatus = directionConflict ? body.paymentStatus : supplier.defaultStatus;
+  const effectivePaymentMethod = directionConflict ? body.paymentMethod : supplier.paymentMethod;
+  const effectivePixKey = directionConflict ? body.pixKey : supplier.pixKey;
+  const effectiveCategoryId = directionConflict ? (categoryId ?? null) : supplier.defaultCategoryId;
+
+  const kindKey = effectiveKind === "CLIENTE" ? "RECEIVABLE" : "PAYABLE";
 
   // Divisão manual (usuário informou que o valor cheio lido é na verdade
   // várias parcelas) substitui as parcelas lidas por completo.
@@ -139,14 +157,14 @@ export async function POST(
         amount: installment.amount,
         dueDate: new Date(dueDateStr),
         noteDate,
-        paymentStatus: supplier.kind === "FORNECEDOR" ? (supplier.defaultStatus ?? undefined) : undefined,
-        paymentMethod: supplier.kind === "FORNECEDOR" ? (supplier.paymentMethod ?? undefined) : undefined,
-        pixKey: supplier.kind === "FORNECEDOR" && supplier.paymentMethod === "PIX" ? supplier.pixKey : undefined,
-        categoryId: supplier.defaultCategoryId,
+        paymentStatus: effectiveKind === "FORNECEDOR" ? (effectivePaymentStatus ?? undefined) : undefined,
+        paymentMethod: effectiveKind === "FORNECEDOR" ? (effectivePaymentMethod ?? undefined) : undefined,
+        pixKey: effectiveKind === "FORNECEDOR" && effectivePaymentMethod === "PIX" ? effectivePixKey : undefined,
+        categoryId: effectiveCategoryId,
         installmentIndex: installments.length > 1 ? index + 1 : null,
         installmentTotal: installments.length > 1 ? installments.length : null,
         noteNumber: extraction.noteNumber,
-        paid: supplier.kind === "FORNECEDOR" && supplier.defaultStatus === "PAGO",
+        paid: effectiveKind === "FORNECEDOR" && effectivePaymentStatus === "PAGO",
         createdByUserId: session.userId,
       },
     });
@@ -198,7 +216,9 @@ export async function POST(
   // Agora que o perfil acabou de ser confirmado, resolve elas sozinho — só
   // fica pendente o que realmente falta o usuário decidir (data, ou
   // categoria pra fornecedor marcado como "muda de categoria nota a nota").
-  if (!supplier.alwaysAskCategory) {
+  // Em conflito de sentido o perfil nem mudou, então não faz sentido
+  // resolver as outras pendências dele com base nesta resposta.
+  if (!supplier.alwaysAskCategory && !directionConflict) {
     await resolveOtherPendingPagesForSupplier(supplier, session.userId);
   }
 

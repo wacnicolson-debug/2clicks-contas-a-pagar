@@ -70,19 +70,40 @@ export const processDocument = inngest.createFunction(
           taxId: page.taxId,
         });
 
+        // Sentido lido da própria nota (emitente/destinatário) bate diferente
+        // do que já estava aprendido pra esse fornecedor — ele é dos dois
+        // lados (compra E vende), então não dá pra confiar no perfil salvo
+        // pra ESTA nota específica. Força perguntar de novo, com o sentido
+        // certo já pré-marcado (ver knownKind), sem mexer no perfil salvo —
+        // a próxima compra de verdade continua vindo automática.
+        const documentKind =
+          page.documentDirection === "VENDA"
+            ? "CLIENTE"
+            : page.documentDirection === "COMPRA"
+              ? "FORNECEDOR"
+              : null;
+        const directionConflict = !!(documentKind && supplier.kind && documentKind !== supplier.kind);
+
         // Fornecedor conhecido mas a nota não trouxe vencimento nenhum: não dá
         // pra lançar automático sem data (regra: só pergunta quando falta mesmo),
         // então essa página também para na tela de perguntas — só que lá ela vai
         // pedir apenas a data, sem repetir as 3 perguntas de classificação.
         const missingDate = page.installments.some((i) => !i.dueDate);
         const needsInput =
-          needsOnboardingQuestions(supplier) || missingDate || supplier.alwaysAskCategory;
+          needsOnboardingQuestions(supplier) ||
+          missingDate ||
+          supplier.alwaysAskCategory ||
+          directionConflict;
 
         const docPage = await prisma.documentPage.create({
           data: {
             documentId: document.id,
             pageNumber: page.pageNumber,
-            rawExtraction: page as unknown as object,
+            rawExtraction: {
+              ...page,
+              knownKind: documentKind ?? page.knownKind ?? null,
+              directionConflict,
+            } as unknown as object,
             supplierId: supplier.id,
             confidence: page.confidence,
             status: needsInput ? "AWAITING_USER_INPUT" : "DONE",
