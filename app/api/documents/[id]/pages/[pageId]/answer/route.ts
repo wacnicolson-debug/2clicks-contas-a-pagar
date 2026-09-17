@@ -29,6 +29,9 @@ type AnswerBody = {
   // Opcional: data real da compra/venda, quando diferente do vencimento (nota
   // de prazo longo lançada com atraso) — ver Transaction.noteDate no schema.
   noteDate?: string;
+  // Observação livre do usuário — vai direto pra coluna "Observações" da
+  // planilha, pra não precisar editar lá depois.
+  description?: string;
 };
 
 export async function POST(
@@ -157,6 +160,7 @@ export async function POST(
         amount: installment.amount,
         dueDate: new Date(dueDateStr),
         noteDate,
+        description: body.description?.trim() || null,
         paymentStatus: effectiveKind === "FORNECEDOR" ? (effectivePaymentStatus ?? undefined) : undefined,
         paymentMethod: effectiveKind === "FORNECEDOR" ? (effectivePaymentMethod ?? undefined) : undefined,
         pixKey: effectiveKind === "FORNECEDOR" && effectivePaymentMethod === "PIX" ? effectivePixKey : undefined,

@@ -35,6 +35,7 @@ export default function AnswerPage() {
   const [pixKey, setPixKey] = useState("");
   const [categoryName, setCategoryName] = useState("");
   const [alwaysAskCategory, setAlwaysAskCategory] = useState(false);
+  const [observacao, setObservacao] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Documento não trazia nenhuma indicação de parcelamento (ex: nota mandada
@@ -145,6 +146,7 @@ export default function AnswerPage() {
             ? split.map((s) => ({ amount: parseFloat(s.amount), dueDate: s.dueDate }))
             : undefined,
           noteDate: noteDate ? String(noteDate) : undefined,
+          description: observacao.trim() || undefined,
         }),
       }
     );
@@ -460,6 +462,19 @@ export default function AnswerPage() {
             name="noteDate"
             type="date"
             defaultValue=""
+            className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1" htmlFor="observacao">
+            Observação (opcional)
+          </label>
+          <input
+            id="observacao"
+            value={observacao}
+            onChange={(e) => setObservacao(e.target.value)}
+            placeholder="vai direto pra coluna Observações da planilha"
             className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
           />
         </div>

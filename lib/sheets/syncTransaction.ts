@@ -119,7 +119,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
     day,
     toBRDateString(dueDate),
     transaction.supplier.name,
-    transaction.description ?? "",
+    "",
     transaction.paymentMethod ? PAYMENT_METHOD_LABEL[transaction.paymentMethod] : "",
     transaction.pixKey ?? "",
     Number(transaction.amount),
@@ -127,7 +127,8 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
     // já é somado sob o mês certo no histórico oculto, logo abaixo) — a
     // linha ainda mostra fornecedor/valor/data pra controle de pagamento.
     costMonthDiffers ? "" : transaction.category?.name ?? "",
-    "",
+    // Observação digitada pelo usuário na tela de perguntas, se houver.
+    transaction.description ?? "",
   ];
 
   const row1Based = rowIndex0 + 1;
@@ -249,13 +250,14 @@ async function writeReceivableRow(params: {
     dueDateStr,
     transaction.paid ? dueDateStr : "",
     transaction.supplier.name,
-    transaction.description ?? "",
+    "",
     transaction.category?.name ?? "",
     "",
     "",
     amount,
     transaction.paid ? amount : "",
-    "",
+    // Observação digitada pelo usuário na tela de perguntas, se houver.
+    transaction.description ?? "",
   ];
 
   await sheets.spreadsheets.values.update({
