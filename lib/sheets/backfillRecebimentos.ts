@@ -32,6 +32,12 @@ export async function rebuildRecebimentosTab(params: {
     return { transactionsPlaced: 0 };
   }
   const sheetId = tab.properties.sheetId;
+  // Já rodou uma vez nessa planilha (os agrupamentos de linha por mês já
+  // existem) — recriar os mesmos grupos de novo dá erro na API do Sheets
+  // ("grupo já existe nesse intervalo"), que travava a chamada inteira antes
+  // até de chegar nas transações. Formatação só precisa rodar 1x; os valores
+  // abaixo continuam idempotentes e são reescritos sempre.
+  const alreadyStructured = (tab.rowGroups?.length ?? 0) > 0;
 
   const transactions = await prisma.transaction.findMany({
     where: {
@@ -53,10 +59,12 @@ export async function rebuildRecebimentosTab(params: {
     valueInputOption: "USER_ENTERED",
     requestBody: { values: structure.values },
   });
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: params.spreadsheetId,
-    requestBody: { requests: buildRecebimentosStructuralRequests(sheetId) },
-  });
+  if (!alreadyStructured) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: params.spreadsheetId,
+      requestBody: { requests: buildRecebimentosStructuralRequests(sheetId) },
+    });
+  }
 
   const nextRowByMonth = new Map<number, number>();
   const cellUpdates: { range: string; values: (string | number)[][] }[] = [];
