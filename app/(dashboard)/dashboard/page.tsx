@@ -4,7 +4,6 @@ import { prisma } from "@/lib/db/prisma";
 import { LogoutButton } from "./logout-button";
 import { DeletePendingButton } from "./delete-pending-button";
 import { RemoveSheetButton } from "./remove-sheet-button";
-import { BackfillRecebimentosButton } from "./backfill-recebimentos-button";
 
 function startOfDay(d: Date) {
   const x = new Date(d);
@@ -177,7 +176,6 @@ export default async function DashboardPage({
           >
             Lançamentos
           </Link>
-          {company.googleRefreshToken && <BackfillRecebimentosButton />}
         </div>
 
         <div className="grid grid-cols-2 gap-4">
