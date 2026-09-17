@@ -355,6 +355,11 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
   const current = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `'${tabName}'!A${blockStart1}:I${blockEnd1}`,
+    // Sem isso, o valor volta já formatado (ex: "R$ 7.845,50" como texto) —
+    // ao regravar esse texto formatado, o Sheets às vezes não reconhece de
+    // volta como número, e a linha vira texto (some da soma do dia). Valor
+    // bruto sempre regrava como número de verdade.
+    valueRenderOption: "UNFORMATTED_VALUE",
   });
   const blockRows = current.data.values ?? [];
   while (blockRows.length < ROWS_PER_DAY) blockRows.push([]);
