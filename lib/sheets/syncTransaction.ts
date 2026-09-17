@@ -117,7 +117,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   const { sheets } = getGoogleClientsForCompany(googleRefreshToken);
   const rowValues = [
     day,
-    dueDate.toISOString().slice(0, 10),
+    toBRDateString(dueDate),
     transaction.supplier.name,
     transaction.description ?? "",
     transaction.paymentMethod ? PAYMENT_METHOD_LABEL[transaction.paymentMethod] : "",
