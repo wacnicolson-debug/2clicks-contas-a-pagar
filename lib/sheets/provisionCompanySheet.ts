@@ -131,8 +131,10 @@ export async function provisionCompanySheet(
   }
 
   valueRanges.push(buildRecebimentosValues());
+  valueRanges.push(buildRecebimentosSummaryValues(year));
   structuralRequests.push(
-    ...buildSimpleHeaderStructuralRequests(sheetIdMap[RECEBIMENTOS_TAB])
+    ...buildSimpleHeaderStructuralRequests(sheetIdMap[RECEBIMENTOS_TAB]),
+    ...buildRecebimentosSummaryStructuralRequests(sheetIdMap[RECEBIMENTOS_TAB])
   );
 
   valueRanges.push(buildPaidLogValues());
@@ -294,6 +296,93 @@ function buildSimpleHeaderStructuralRequests(
   sheetId: number
 ): sheets_v4.Schema$Request[] {
   return commonHeaderFormatting(sheetId, RECEBIMENTOS_HEADERS.length);
+}
+
+// Bloco de resumo mensal (soma do que foi vendido em cada mês), ao lado da
+// lista de recebimentos, nas colunas L/M — SUMIFS sobre a data prevista
+// (coluna A) e o valor previsto (coluna H) da própria lista.
+const SUMMARY_MONTH_COLUMN = "L";
+const SUMMARY_VALUE_COLUMN = "M";
+
+export function buildRecebimentosSummaryValues(year: number): sheets_v4.Schema$ValueRange {
+  const rows: (string | number)[][] = [];
+  rows.push([`RESUMO MENSAL DE VENDAS — ${year}`]);
+  rows.push(["Mês", "Total vendido"]);
+
+  MONTHS.forEach((month, index) => {
+    const monthNumber = index + 1;
+    const nextMonthNumber = monthNumber === 12 ? 1 : monthNumber + 1;
+    const nextYear = monthNumber === 12 ? year + 1 : year;
+    const formula =
+      `=SUMIFS('${RECEBIMENTOS_TAB}'!$H$3:$H$100000;` +
+      `'${RECEBIMENTOS_TAB}'!$A$3:$A$100000;">="&DATE(${year};${monthNumber};1);` +
+      `'${RECEBIMENTOS_TAB}'!$A$3:$A$100000;"<"&DATE(${nextYear};${nextMonthNumber};1))`;
+    rows.push([month, formula]);
+  });
+
+  rows.push([
+    "TOTAL DO ANO",
+    `=SUM(${SUMMARY_VALUE_COLUMN}3:${SUMMARY_VALUE_COLUMN}14)`,
+  ]);
+
+  return {
+    range: `'${RECEBIMENTOS_TAB}'!${SUMMARY_MONTH_COLUMN}1`,
+    values: rows,
+  };
+}
+
+export function buildRecebimentosSummaryStructuralRequests(
+  sheetId: number
+): sheets_v4.Schema$Request[] {
+  const startColumnIndex = 11; // L
+  const endColumnIndex = 13; // M, exclusivo
+
+  return [
+    {
+      mergeCells: {
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex, endColumnIndex },
+        mergeType: "MERGE_ALL",
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex, endColumnIndex },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { bold: true, fontSize: 12 },
+            backgroundColor: { red: 0.16, green: 0.28, blue: 0.24 },
+          },
+        },
+        fields: "userEnteredFormat(textFormat,backgroundColor)",
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex, endColumnIndex },
+        cell: { userEnteredFormat: { textFormat: { bold: true } } },
+        fields: "userEnteredFormat.textFormat",
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 2, endRowIndex: 14, startColumnIndex: 12, endColumnIndex },
+        cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: '"R$" #,##0.00' } } },
+        fields: "userEnteredFormat.numberFormat",
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 14, endRowIndex: 15, startColumnIndex, endColumnIndex },
+        cell: {
+          userEnteredFormat: {
+            textFormat: { bold: true },
+            numberFormat: { type: "CURRENCY", pattern: '"R$" #,##0.00' },
+          },
+        },
+        fields: "userEnteredFormat(textFormat,numberFormat)",
+      },
+    },
+  ];
 }
 
 // ---------- Aba Custos Pagos (histórico oculto, insumo da Classificação de Custos) ----------

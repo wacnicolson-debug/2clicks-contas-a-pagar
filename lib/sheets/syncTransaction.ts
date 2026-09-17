@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
 import { PAID_LOG_TAB, RECEBIMENTOS_TAB } from "./provisionCompanySheet";
+import { toBRDateString } from "@/lib/utils/formatDateBR";
 
 const ROWS_PER_DAY = 30;
 const HEADER_ROWS = 2; // título + cabeçalho, 0-based -> primeira linha de dado = índice 2
@@ -242,7 +243,7 @@ async function writeReceivableRow(params: {
   const row1Based = rowIndex0 + 1;
 
   const { sheets } = getGoogleClientsForCompany(params.googleRefreshToken);
-  const dueDateStr = transaction.dueDate.toISOString().slice(0, 10);
+  const dueDateStr = toBRDateString(transaction.dueDate);
   const amount = Number(transaction.amount);
   const rowValues = [
     dueDateStr,
