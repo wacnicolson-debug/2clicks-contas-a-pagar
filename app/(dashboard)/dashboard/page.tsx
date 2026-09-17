@@ -140,7 +140,7 @@ export default async function DashboardPage({
           </div>
         )}
 
-        <div className="flex gap-3 mb-8">
+        <div className="flex flex-wrap gap-3 mb-8">
           <Link
             href="/documentos/upload"
             className="bg-emerald-700 text-white rounded-md px-4 py-2 text-sm font-medium"
