@@ -3,6 +3,12 @@ import { getGoogleClientsForCompany } from "./client";
 import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
 import { PAID_LOG_TAB, RECEBIMENTOS_TAB, recebimentosMonthBlockRows } from "./provisionCompanySheet";
 import { toBRDateString } from "@/lib/utils/formatDateBR";
+import {
+  APP_COLUMN_COUNT,
+  columnLetter,
+  isRowOccupied,
+  readDayBlockLayout,
+} from "./dayBlockLayout";
 
 const ROWS_PER_DAY = 30;
 const HEADER_ROWS = 2; // título + cabeçalho, 0-based -> primeira linha de dado = índice 2
@@ -107,7 +113,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   const day = dueDate.getUTCDate();
   const spreadsheetId = await getOrCreateCompanySheetForYear(transaction.companyId, year);
 
-  const rowIndex0 = await reserveNextRowForDay({
+  const reservedRow0 = await reserveNextRowForDay({
     companyId: transaction.companyId,
     year,
     tabName: monthName,
@@ -115,6 +121,41 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   });
 
   const { sheets } = getGoogleClientsForCompany(googleRefreshToken);
+
+  // O contador só conhece o que o app gravou. Se o usuário digitou algo direto
+  // na planilha nessa linha, pula pra próxima vazia em vez de gravar por cima;
+  // e a coluna "Dia" pode não ser mais a A (colunas inseridas antes dela).
+  const blockStart0 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY;
+  const blockEnd0 = blockStart0 + ROWS_PER_DAY; // exclusivo
+  const { offset, rows: currentBlock } = await readDayBlockLayout({
+    sheets,
+    spreadsheetId,
+    tabName: monthName,
+    blockStart1: blockStart0 + 1,
+    blockEnd1: blockEnd0,
+  });
+  let rowIndex0 = reservedRow0;
+  while (rowIndex0 < blockEnd0 && isRowOccupied(currentBlock[rowIndex0 - blockStart0], offset)) {
+    rowIndex0++;
+  }
+  if (rowIndex0 >= blockEnd0) {
+    throw new Error(
+      `As ${ROWS_PER_DAY} linhas reservadas para o dia ${day} de ${monthName}/${year} já estão cheias.`
+    );
+  }
+  if (rowIndex0 !== reservedRow0) {
+    await prisma.sheetRowIndex.updateMany({
+      where: {
+        companyId: transaction.companyId,
+        year,
+        tabName: monthName,
+        key: `day-${day}`,
+        rowIndex: { lt: rowIndex0 + 1 },
+      },
+      data: { rowIndex: rowIndex0 + 1 },
+    });
+  }
+
   const rowValues = [
     day,
     toBRDateString(dueDate),
@@ -134,7 +175,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   const row1Based = rowIndex0 + 1;
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `'${monthName}'!A${row1Based}:I${row1Based}`,
+    range: `'${monthName}'!${columnLetter(offset)}${row1Based}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${row1Based}`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [rowValues] },
   });
@@ -354,17 +395,28 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
 
   const { sheets } = getGoogleClientsForCompany(transaction.company.googleRefreshToken);
 
-  const current = await sheets.spreadsheets.values.get({
+  // Valor bruto (não "R$ 7.845,50" como texto, que o Sheets às vezes não
+  // reconhece de volta como número ao regravar) e a coluna "Dia" achada pelo
+  // cabeçalho — o usuário pode ter inserido colunas antes dela (ex: "Semana").
+  const { offset, rows: currentRows } = await readDayBlockLayout({
+    sheets,
     spreadsheetId,
-    range: `'${tabName}'!A${blockStart1}:I${blockEnd1}`,
-    // Sem isso, o valor volta já formatado (ex: "R$ 7.845,50" como texto) —
-    // ao regravar esse texto formatado, o Sheets às vezes não reconhece de
-    // volta como número, e a linha vira texto (some da soma do dia). Valor
-    // bruto sempre regrava como número de verdade.
-    valueRenderOption: "UNFORMATTED_VALUE",
+    tabName,
+    blockStart1,
+    blockEnd1,
   });
-  const blockRows = current.data.values ?? [];
-  while (blockRows.length < ROWS_PER_DAY) blockRows.push([]);
+  // Só as colunas do app (sempre 9, com "" nas vazias — uma linha mais curta
+  // deixaria sobrando o conteúdo antigo daquela posição depois do deslocamento).
+  const blockRows: (string | number)[][] = [];
+  for (let i = 0; i < ROWS_PER_DAY; i++) {
+    const source = currentRows[i] ?? [];
+    blockRows.push(
+      Array.from({ length: APP_COLUMN_COUNT }, (_, c) => {
+        const value = source[offset + c];
+        return value === undefined || value === null ? "" : (value as string | number);
+      })
+    );
+  }
 
   const deletedIndex = deletedRow1 - blockStart1;
   if (deletedIndex >= 0 && deletedIndex < blockRows.length) {
@@ -374,7 +426,7 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
 
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range: `'${tabName}'!A${blockStart1}:I${blockEnd1}`,
+    range: `'${tabName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
     valueInputOption: "USER_ENTERED",
     requestBody: { values: blockRows },
   });
