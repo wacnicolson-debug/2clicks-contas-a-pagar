@@ -292,13 +292,13 @@ export function sheetDestinationKey(t: {
 export async function updateTransactionRowInPlace(
   transactionId: string,
   previousAmount: number
-): Promise<boolean> {
+): Promise<{ row: number } | null> {
   const t = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
     include: { supplier: true, category: true, company: true, document: true },
   });
   const token = t.company.googleRefreshToken;
-  if (!token) return false;
+  if (!token) return null;
 
   let tabName: string;
   let storedRow1: number | null = null;
@@ -319,25 +319,26 @@ export async function updateTransactionRowInPlace(
     // linha no bloco do dia pelo conteúdo, em vez de gravar outra por cima.
     tabName = MONTHS[t.dueDate.getUTCMonth()];
   } else {
-    return false;
+    return null;
   }
   if (tabName === PAID_LOG_TAB || tabName === RECEBIMENTOS_TAB) {
-    if (!storedRow1) return false;
+    if (!storedRow1) return null;
   }
+  let resultRow = storedRow1 ?? 0;
 
   const costDate = t.noteDate ?? t.dueDate;
   const sheetYear = tabName === PAID_LOG_TAB ? costDate.getUTCFullYear() : t.dueDate.getUTCFullYear();
   const companySheet = await prisma.companySheet.findUnique({
     where: { companyId_year: { companyId: t.companyId, year: sheetYear } },
   });
-  if (!companySheet) return false;
+  if (!companySheet) return null;
   const spreadsheetId = companySheet.spreadsheetId;
   const { sheets } = getGoogleClientsForCompany(token);
 
   if (tabName === PAID_LOG_TAB) {
     const range = `'${PAID_LOG_TAB}'!A${storedRow1}:F${storedRow1}`;
     const current = await sheets.spreadsheets.values.get({ spreadsheetId, range });
-    if (String(current.data.values?.[0]?.[5] ?? "") !== t.id) return false;
+    if (String(current.data.values?.[0]?.[5] ?? "") !== t.id) return null;
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range,
@@ -362,7 +363,7 @@ export async function updateTransactionRowInPlace(
       range,
       valueRenderOption: "UNFORMATTED_VALUE",
     });
-    if (!rowMatchesTransaction(current.data.values?.[0], t.supplier.name, previousAmount)) return false;
+    if (!rowMatchesTransaction(current.data.values?.[0], t.supplier.name, previousAmount)) return null;
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range,
@@ -384,8 +385,9 @@ export async function updateTransactionRowInPlace(
     const index = rowMatchesTransaction(rows[storedIndex], t.supplier.name, previousAmount)
       ? storedIndex
       : rows.findIndex((row) => rowMatchesTransaction(row, t.supplier.name, previousAmount));
-    if (index < 0) return false;
+    if (index < 0) return null;
     const row1 = blockStart1 + index;
+    resultRow = row1;
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: `'${tabName}'!${columnLetter(offset)}${row1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${row1}`,
@@ -401,7 +403,7 @@ export async function updateTransactionRowInPlace(
   }
 
   await prisma.transaction.update({ where: { id: t.id }, data: { sheetSyncStatus: "SYNCED" } });
-  return true;
+  return { row: resultRow };
 }
 
 /**

@@ -37,6 +37,7 @@ export function EditTransactionForm({
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -67,8 +68,34 @@ export function EditTransactionForm({
       setError("Não foi possível salvar. Tente de novo.");
       return;
     }
-    router.push("/lancamentos");
+    const data = await res.json().catch(() => null);
+    const sheet = data?.sheet as { action: string; tab: string | null; row: number | null } | undefined;
+    const where = sheet?.tab && sheet.row ? ` (aba ${sheet.tab}, linha ${sheet.row})` : "";
+    setResult(
+      sheet?.action === "updated"
+        ? `Salvo. A linha que já existia na planilha foi atualizada${where}.`
+        : sheet?.action === "created"
+          ? `Salvo. Não encontrei a linha original desse lançamento na planilha, então gravei uma nova${where}. Se ainda existir uma linha antiga dele, apague na mão.`
+          : `Salvo. O lançamento mudou de lugar na planilha${where}.`
+    );
     router.refresh();
+  }
+
+  if (result) {
+    return (
+      <div className="min-h-screen bg-neutral-50 px-4 py-10">
+        <div className="max-w-md mx-auto bg-white border border-neutral-200 rounded-lg p-8 space-y-6">
+          <p className="text-sm">{result}</p>
+          <button
+            type="button"
+            onClick={() => router.push("/lancamentos")}
+            className="w-full bg-emerald-700 text-white rounded-md py-2 text-sm font-medium"
+          >
+            Voltar aos lançamentos
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (

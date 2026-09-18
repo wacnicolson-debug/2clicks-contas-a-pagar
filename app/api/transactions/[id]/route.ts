@@ -122,16 +122,34 @@ export async function PATCH(
     },
   });
 
+  // O que foi feito na planilha, devolvido pra tela avisar o usuário — assim
+  // dá pra ver na hora se atualizou a linha existente ou gravou uma nova.
+  let action: "updated" | "created" | "moved";
   if (inPlace) {
     const updatedInPlace = await updateTransactionRowInPlace(updated.id, previousAmount);
-    // Linha não encontrada na planilha (apagada/movida por fora): não há o que
-    // corrigir, então grava como nova — sem apagar nada.
-    if (!updatedInPlace) await syncTransactionToSheet(updated.id);
+    if (updatedInPlace) {
+      action = "updated";
+    } else {
+      // Linha não encontrada na planilha (apagada/movida por fora): não há o que
+      // corrigir, então grava como nova — sem apagar nada.
+      await syncTransactionToSheet(updated.id);
+      action = "created";
+    }
   } else {
     await syncTransactionToSheet(updated.id);
+    action = "moved";
   }
 
-  return NextResponse.json({ ok: true });
+  const finalRef = await prisma.transaction.findUnique({
+    where: { id: updated.id },
+    select: { sheetCellRef: true },
+  });
+  const [tab, cell] = (finalRef?.sheetCellRef ?? "").split("!");
+
+  return NextResponse.json({
+    ok: true,
+    sheet: { action, tab: tab || null, row: Number(cell?.match(/\d+/)?.[0]) || null },
+  });
 }
 
 export async function DELETE(
