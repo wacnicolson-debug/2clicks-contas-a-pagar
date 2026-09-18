@@ -74,9 +74,9 @@ export function EditTransactionForm({
     setResult(
       sheet?.action === "updated"
         ? `Salvo. A linha que já existia na planilha foi atualizada${where}.`
-        : sheet?.action === "created"
-          ? `Salvo. Não encontrei a linha original desse lançamento na planilha, então gravei uma nova${where}. Se ainda existir uma linha antiga dele, apague na mão.`
-          : `Salvo. O lançamento mudou de lugar na planilha${where}.`
+        : sheet?.action === "moved"
+          ? `Salvo. A linha desse lançamento foi movida na planilha${where}.`
+          : "Salvo no sistema, mas não encontrei a linha desse lançamento na planilha — não mexi na planilha e nenhuma linha nova foi criada. Ajuste a linha na mão, se ela existir."
     );
     router.refresh();
   }

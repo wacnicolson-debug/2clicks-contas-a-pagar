@@ -101,11 +101,11 @@ export async function PATCH(
   const inPlace = sameDestination && !transaction.costLogCellRef;
   const previousAmount = Number(transaction.amount);
 
-  if (!inPlace) {
-    // Tira da posição atual antes de mudar os dados (senão a linha antiga
-    // fica órfã na planilha) — o clear confere o conteúdo com os dados antigos.
-    await clearTransactionFromSheet(transaction.id);
-  }
+  // Só o que a linha antiga ocupa na planilha importa aqui: se for mudar de
+  // lugar, tira da posição atual (o clear confere o conteúdo com os dados
+  // antigos). Editar NUNCA cria lançamento novo — se a linha não for achada,
+  // a planilha fica como está e a tela avisa.
+  const removedFromOldPlace = inPlace ? false : await clearTransactionFromSheet(transaction.id);
 
   const updated = await prisma.transaction.update({
     where: { id: transaction.id },
@@ -117,27 +117,20 @@ export async function PATCH(
       description,
       paymentStatus,
       paid,
-      sheetSyncStatus: "PENDING",
-      ...(inPlace ? {} : { sheetCellRef: null, costLogCellRef: null }),
+      ...(removedFromOldPlace ? { sheetSyncStatus: "PENDING", sheetCellRef: null, costLogCellRef: null } : {}),
     },
   });
 
-  // O que foi feito na planilha, devolvido pra tela avisar o usuário — assim
-  // dá pra ver na hora se atualizou a linha existente ou gravou uma nova.
-  let action: "updated" | "created" | "moved";
+  // O que foi feito na planilha, devolvido pra tela avisar o usuário.
+  let action: "updated" | "moved" | "not_found";
   if (inPlace) {
-    const updatedInPlace = await updateTransactionRowInPlace(updated.id, previousAmount);
-    if (updatedInPlace) {
-      action = "updated";
-    } else {
-      // Linha não encontrada na planilha (apagada/movida por fora): não há o que
-      // corrigir, então grava como nova — sem apagar nada.
-      await syncTransactionToSheet(updated.id);
-      action = "created";
-    }
-  } else {
+    action = (await updateTransactionRowInPlace(updated.id, previousAmount)) ? "updated" : "not_found";
+  } else if (removedFromOldPlace) {
+    // A linha antiga foi achada e tirada — a MESMA linha passa pro novo lugar.
     await syncTransactionToSheet(updated.id);
     action = "moved";
+  } else {
+    action = "not_found";
   }
 
   const finalRef = await prisma.transaction.findUnique({

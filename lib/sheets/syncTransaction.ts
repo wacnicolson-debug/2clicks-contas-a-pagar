@@ -495,14 +495,14 @@ async function writeReceivableRow(params: {
  * Sem isso, um lançamento real podia ficar escondido atrás de uma linha em
  * branco quando o item apagado era justamente o primeiro do dia.
  */
-export async function clearTransactionFromSheet(transactionId: string): Promise<void> {
+export async function clearTransactionFromSheet(transactionId: string): Promise<boolean> {
   const transaction = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
     include: { company: true, supplier: true },
   });
 
   if (!transaction.company.googleRefreshToken) {
-    return; // nunca conectou o Google, nada pra limpar
+    return false; // nunca conectou o Google, nada pra limpar
   }
 
   // Custo de mês diferente do vencimento grava uma linha EXTRA no histórico
@@ -536,19 +536,19 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
   }
 
   if (!transaction.sheetCellRef) {
-    return; // nunca chegou a sincronizar a linha principal, nada mais pra limpar
+    return false; // nunca chegou a sincronizar a linha principal, nada mais pra limpar
   }
 
   const year = transaction.dueDate.getUTCFullYear();
   const companySheet = await prisma.companySheet.findUnique({
     where: { companyId_year: { companyId: transaction.companyId, year } },
   });
-  if (!companySheet) return; // a planilha desse ano nem existe — nada pra limpar
+  if (!companySheet) return false; // a planilha desse ano nem existe — nada pra limpar
   const spreadsheetId = companySheet.spreadsheetId;
 
   const [tabName, cell] = transaction.sheetCellRef.split("!");
   const deletedRow1Str = cell.match(/\d+/)?.[0];
-  if (!deletedRow1Str) return;
+  if (!deletedRow1Str) return false;
   const deletedRow1 = Number(deletedRow1Str);
 
   if (tabName === PAID_LOG_TAB) {
@@ -560,8 +560,9 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     const logRow = await sheetsClient.spreadsheets.values.get({ spreadsheetId, range: logRange });
     if (String(logRow.data.values?.[0]?.[5] ?? "") === transaction.id) {
       await sheetsClient.spreadsheets.values.clear({ spreadsheetId, range: logRange });
+      return true;
     }
-    return;
+    return false;
   }
 
   if (tabName === RECEBIMENTOS_TAB) {
@@ -578,8 +579,9 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
       rowMatchesTransaction(recvRow.data.values?.[0], transaction.supplier.name, Number(transaction.amount))
     ) {
       await sheetsClient.spreadsheets.values.clear({ spreadsheetId, range: recvRange });
+      return true;
     }
-    return;
+    return false;
   }
 
   const day = transaction.dueDate.getUTCDate();
@@ -629,7 +631,7 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     console.warn(
       `Lançamento ${transaction.id} (${transaction.supplier.name}) não encontrado no bloco do dia ${day} de ${tabName} — nada foi apagado da planilha.`
     );
-    return;
+    return false;
   }
   const actualDeletedRow1 = blockStart1 + deletedIndex;
 
@@ -673,6 +675,7 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     where: { companyId: transaction.companyId, year, tabName, key: `day-${day}` },
     data: { rowIndex: { decrement: 1 } },
   });
+  return true;
 }
 
 /**
