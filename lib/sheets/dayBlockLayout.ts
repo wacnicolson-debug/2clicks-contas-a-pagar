@@ -53,6 +53,37 @@ export async function readDayBlockLayout(params: {
   };
 }
 
+function cellToNumber(cell: unknown): number | null {
+  if (typeof cell === "number") return cell;
+  if (typeof cell !== "string") return null;
+  const cleaned = cell.replace(/R\$|\s/g, "").replace(/\./g, "").replace(",", ".");
+  if (!/^-?\d+(\.\d+)?$/.test(cleaned)) return null;
+  return Number(cleaned);
+}
+
+/**
+ * A linha é deste lançamento? Confere fornecedor e valor em QUALQUER coluna —
+ * assim funciona mesmo em linha gravada uma coluna fora do lugar. Existe pra
+ * nunca apagar/compactar a linha errada quando a planilha mudou por fora
+ * (linha movida ou apagada na mão) e a posição guardada no banco ficou velha.
+ */
+export function rowMatchesTransaction(
+  row: unknown[] | undefined,
+  supplierName: string,
+  amount: number
+): boolean {
+  if (!row) return false;
+  const supplierNorm = normalizeText(supplierName);
+  const hasSupplier = row.some(
+    (cell) => typeof cell === "string" && normalizeText(cell) === supplierNorm
+  );
+  const hasAmount = row.some((cell) => {
+    const n = cellToNumber(cell);
+    return n !== null && Math.abs(n - amount) < 0.005;
+  });
+  return hasSupplier && hasAmount;
+}
+
 /** Linha já tem algo além do "Dia" pré-preenchido (ex: lançamento digitado direto na planilha). */
 export function isRowOccupied(row: unknown[] | undefined, offset: number): boolean {
   for (let c = offset + 1; c < offset + APP_COLUMN_COUNT; c++) {

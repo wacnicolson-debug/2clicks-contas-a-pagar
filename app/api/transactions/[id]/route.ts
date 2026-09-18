@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
-import { clearTransactionFromSheet, syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
+import {
+  clearTransactionFromSheet,
+  sheetDestinationKey,
+  syncTransactionToSheet,
+  updateTransactionRowInPlace,
+} from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
 
 type PatchBody = {
@@ -33,6 +38,7 @@ export async function PATCH(
 
   const transaction = await prisma.transaction.findFirst({
     where: { id, companyId: session.companyId },
+    include: { document: true },
   });
   if (!transaction) {
     return NextResponse.json({ error: "Lançamento não encontrado." }, { status: 404 });
@@ -72,9 +78,34 @@ export async function PATCH(
     paid = body.paid;
   }
 
-  // Tira da posição atual (bloco do dia, Custos Pagos ou Recebimentos) antes
-  // de mudar os dados — senão a linha antiga fica órfã na planilha.
-  await clearTransactionFromSheet(transaction.id);
+  // Corrigir categoria, valor, nº da nota ou observação altera a linha que já
+  // existe, no mesmo lugar. Só muda de lugar (tira da atual e coloca de novo)
+  // se o vencimento ou o "pago" mudarem o destino — ou se o lançamento tem
+  // também uma linha extra de custo em outro mês (nota de prazo longo).
+  const fromPaymentList = transaction.document?.kind === "PAYMENT_LIST";
+  const sameDestination =
+    sheetDestinationKey({
+      kind: transaction.kind,
+      dueDate: transaction.dueDate,
+      noteDate: transaction.noteDate,
+      paid: transaction.paid,
+      fromPaymentList,
+    }) ===
+    sheetDestinationKey({
+      kind: transaction.kind,
+      dueDate,
+      noteDate: transaction.noteDate,
+      paid,
+      fromPaymentList,
+    });
+  const inPlace = sameDestination && !!transaction.sheetCellRef && !transaction.costLogCellRef;
+  const previousAmount = Number(transaction.amount);
+
+  if (!inPlace) {
+    // Tira da posição atual antes de mudar os dados (senão a linha antiga
+    // fica órfã na planilha) — o clear confere o conteúdo com os dados antigos.
+    await clearTransactionFromSheet(transaction.id);
+  }
 
   const updated = await prisma.transaction.update({
     where: { id: transaction.id },
@@ -87,14 +118,18 @@ export async function PATCH(
       paymentStatus,
       paid,
       sheetSyncStatus: "PENDING",
-      sheetCellRef: null,
-      costLogCellRef: null,
+      ...(inPlace ? {} : { sheetCellRef: null, costLogCellRef: null }),
     },
   });
 
-  // Recoloca já com os dados novos — decide de novo pra onde vai (o
-  // vencimento ou o "pago" podem ter mudado o destino certo).
-  await syncTransactionToSheet(updated.id);
+  if (inPlace) {
+    const updatedInPlace = await updateTransactionRowInPlace(updated.id, previousAmount);
+    // Linha não encontrada na planilha (apagada/movida por fora): não há o que
+    // corrigir, então grava como nova — sem apagar nada.
+    if (!updatedInPlace) await syncTransactionToSheet(updated.id);
+  } else {
+    await syncTransactionToSheet(updated.id);
+  }
 
   return NextResponse.json({ ok: true });
 }

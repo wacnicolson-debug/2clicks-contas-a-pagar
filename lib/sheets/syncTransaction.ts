@@ -8,6 +8,7 @@ import {
   columnLetter,
   isRowOccupied,
   readDayBlockLayout,
+  rowMatchesTransaction,
 } from "./dayBlockLayout";
 
 const ROWS_PER_DAY = 30;
@@ -156,21 +157,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
     });
   }
 
-  const rowValues = [
-    day,
-    toBRDateString(dueDate),
-    transaction.supplier.name,
-    "",
-    transaction.paymentMethod ? PAYMENT_METHOD_LABEL[transaction.paymentMethod] : "",
-    transaction.pixKey ?? "",
-    Number(transaction.amount),
-    // Custo divergente do vencimento: deixa em branco aqui (senão conta 2x —
-    // já é somado sob o mês certo no histórico oculto, logo abaixo) — a
-    // linha ainda mostra fornecedor/valor/data pra controle de pagamento.
-    costMonthDiffers ? "" : transaction.category?.name ?? "",
-    // Observação digitada pelo usuário na tela de perguntas, se houver.
-    transaction.description ?? "",
-  ];
+  const rowValues = buildDayRowValues(transaction, costMonthDiffers);
 
   const row1Based = rowIndex0 + 1;
   await sheets.spreadsheets.values.update({
@@ -208,6 +195,194 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   });
 }
 
+type DayRowSource = {
+  dueDate: Date;
+  amount: unknown;
+  paymentMethod: string | null;
+  pixKey: string | null;
+  description: string | null;
+  supplier: { name: string };
+  category: { name: string } | null;
+};
+
+function buildDayRowValues(t: DayRowSource, costMonthDiffers: boolean): (string | number)[] {
+  return [
+    t.dueDate.getUTCDate(),
+    toBRDateString(t.dueDate),
+    t.supplier.name,
+    "",
+    t.paymentMethod ? PAYMENT_METHOD_LABEL[t.paymentMethod] : "",
+    t.pixKey ?? "",
+    Number(t.amount),
+    // Custo divergente do vencimento: deixa em branco aqui (senão conta 2x —
+    // já é somado sob o mês certo no histórico oculto) — a linha ainda mostra
+    // fornecedor/valor/data pra controle de pagamento.
+    costMonthDiffers ? "" : t.category?.name ?? "",
+    // Observação digitada pelo usuário (tela de perguntas ou Editar), se houver.
+    t.description ?? "",
+  ];
+}
+
+function buildReceivableRowValues(t: {
+  dueDate: Date;
+  amount: unknown;
+  paid: boolean;
+  description: string | null;
+  supplier: { name: string };
+  category: { name: string } | null;
+}): (string | number)[] {
+  const dueDateStr = toBRDateString(t.dueDate);
+  const amount = Number(t.amount);
+  return [
+    dueDateStr,
+    t.paid ? dueDateStr : "",
+    t.supplier.name,
+    "",
+    t.category?.name ?? "",
+    "",
+    "",
+    amount,
+    t.paid ? amount : "",
+    t.description ?? "",
+  ];
+}
+
+function buildCostLogRowValues(p: {
+  monthName: string;
+  categoryName: string;
+  amount: number;
+  supplierName: string;
+  date: Date;
+  transactionId: string;
+}): (string | number)[] {
+  return [p.monthName, p.categoryName, p.amount, p.supplierName, p.date.toISOString().slice(0, 10), p.transactionId];
+}
+
+/**
+ * Onde o lançamento fica na planilha. Dois estados com a mesma chave ocupam a
+ * mesma linha — então uma correção (categoria, valor, observação...) pode ser
+ * feita no lugar. Chave diferente (vencimento em outro dia, virou "pago"...)
+ * significa que a linha precisa mudar de lugar.
+ */
+export function sheetDestinationKey(t: {
+  kind: "PAYABLE" | "RECEIVABLE";
+  dueDate: Date;
+  noteDate: Date | null;
+  paid: boolean;
+  fromPaymentList: boolean;
+}): string {
+  const y = t.dueDate.getUTCFullYear();
+  const m = t.dueDate.getUTCMonth();
+  if (t.kind === "RECEIVABLE") return `recv:${y}-${m}`;
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+  if (t.paid && (t.fromPaymentList || t.dueDate >= startOfToday)) {
+    return `log:${(t.noteDate ?? t.dueDate).getUTCFullYear()}`;
+  }
+  return `day:${y}-${m}-${t.dueDate.getUTCDate()}`;
+}
+
+/**
+ * Corrige a linha JÁ EXISTENTE do lançamento (mesmo lugar na planilha), em vez
+ * de apagar e criar de novo. Confere que a linha guardada ainda é dele
+ * (fornecedor + valor antigo; no histórico de pagos, pelo id) e, se a planilha
+ * mudou por fora, procura no bloco a que bate. Devolve false se não achou —
+ * aí quem chamou grava como nova (não há linha velha pra apagar).
+ */
+export async function updateTransactionRowInPlace(
+  transactionId: string,
+  previousAmount: number
+): Promise<boolean> {
+  const t = await prisma.transaction.findUniqueOrThrow({
+    where: { id: transactionId },
+    include: { supplier: true, category: true, company: true },
+  });
+  const token = t.company.googleRefreshToken;
+  if (!token || !t.sheetCellRef) return false;
+
+  const [tabName, cell] = t.sheetCellRef.split("!");
+  const storedRow1 = Number(cell?.match(/\d+/)?.[0]);
+  if (!storedRow1) return false;
+
+  const costDate = t.noteDate ?? t.dueDate;
+  const sheetYear = tabName === PAID_LOG_TAB ? costDate.getUTCFullYear() : t.dueDate.getUTCFullYear();
+  const companySheet = await prisma.companySheet.findUnique({
+    where: { companyId_year: { companyId: t.companyId, year: sheetYear } },
+  });
+  if (!companySheet) return false;
+  const spreadsheetId = companySheet.spreadsheetId;
+  const { sheets } = getGoogleClientsForCompany(token);
+
+  if (tabName === PAID_LOG_TAB) {
+    const range = `'${PAID_LOG_TAB}'!A${storedRow1}:F${storedRow1}`;
+    const current = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+    if (String(current.data.values?.[0]?.[5] ?? "") !== t.id) return false;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [
+          buildCostLogRowValues({
+            monthName: MONTHS[costDate.getUTCMonth()],
+            categoryName: t.category?.name ?? "",
+            amount: Number(t.amount),
+            supplierName: t.supplier.name,
+            date: costDate,
+            transactionId: t.id,
+          }),
+        ],
+      },
+    });
+  } else if (tabName === RECEBIMENTOS_TAB) {
+    const range = `'${RECEBIMENTOS_TAB}'!A${storedRow1}:J${storedRow1}`;
+    const current = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range,
+      valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    if (!rowMatchesTransaction(current.data.values?.[0], t.supplier.name, previousAmount)) return false;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [buildReceivableRowValues(t)] },
+    });
+  } else {
+    const day = t.dueDate.getUTCDate();
+    const blockStart1 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY + 1;
+    const blockEnd1 = blockStart1 + ROWS_PER_DAY - 1;
+    const { offset, rows } = await readDayBlockLayout({
+      sheets,
+      spreadsheetId,
+      tabName,
+      blockStart1,
+      blockEnd1,
+    });
+    const storedIndex = storedRow1 - blockStart1;
+    const index = rowMatchesTransaction(rows[storedIndex], t.supplier.name, previousAmount)
+      ? storedIndex
+      : rows.findIndex((row) => rowMatchesTransaction(row, t.supplier.name, previousAmount));
+    if (index < 0) return false;
+    const row1 = blockStart1 + index;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `'${tabName}'!${columnLetter(offset)}${row1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${row1}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [buildDayRowValues(t, false)] },
+    });
+    if (row1 !== storedRow1) {
+      await prisma.transaction.update({
+        where: { id: t.id },
+        data: { sheetCellRef: `${tabName}!A${row1}` },
+      });
+    }
+  }
+
+  await prisma.transaction.update({ where: { id: t.id }, data: { sheetSyncStatus: "SYNCED" } });
+  return true;
+}
+
 /**
  * Grava 1 linha no histórico oculto que alimenta a Classificação de Custos —
  * usado tanto pra lançamento pago adiantado (sem linha no bloco do dia)
@@ -236,14 +411,7 @@ async function writeCostLogEntry(params: {
   const row1Based = rowIndex0 + 1;
 
   const { sheets } = getGoogleClientsForCompany(params.googleRefreshToken);
-  const rowValues = [
-    params.monthName,
-    params.categoryName,
-    params.amount,
-    params.supplierName,
-    params.date.toISOString().slice(0, 10),
-    params.transactionId,
-  ];
+  const rowValues = buildCostLogRowValues(params);
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: params.spreadsheetId,
@@ -285,21 +453,7 @@ async function writeReceivableRow(params: {
   const row1Based = rowIndex0 + 1;
 
   const { sheets } = getGoogleClientsForCompany(params.googleRefreshToken);
-  const dueDateStr = toBRDateString(transaction.dueDate);
-  const amount = Number(transaction.amount);
-  const rowValues = [
-    dueDateStr,
-    transaction.paid ? dueDateStr : "",
-    transaction.supplier.name,
-    "",
-    transaction.category?.name ?? "",
-    "",
-    "",
-    amount,
-    transaction.paid ? amount : "",
-    // Observação digitada pelo usuário na tela de perguntas, se houver.
-    transaction.description ?? "",
-  ];
+  const rowValues = buildReceivableRowValues(transaction);
 
   await sheets.spreadsheets.values.update({
     spreadsheetId: params.spreadsheetId,
@@ -321,7 +475,7 @@ async function writeReceivableRow(params: {
 export async function clearTransactionFromSheet(transactionId: string): Promise<void> {
   const transaction = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
-    include: { company: true },
+    include: { company: true, supplier: true },
   });
 
   if (!transaction.company.googleRefreshToken) {
@@ -342,10 +496,18 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
       const rowNum = cell.match(/\d+/)?.[0];
       if (rowNum) {
         const { sheets: logSheets } = getGoogleClientsForCompany(transaction.company.googleRefreshToken);
-        await logSheets.spreadsheets.values.clear({
+        const logRange = `'${PAID_LOG_TAB}'!A${rowNum}:F${rowNum}`;
+        const logRow = await logSheets.spreadsheets.values.get({
           spreadsheetId: costSheet.spreadsheetId,
-          range: `'${PAID_LOG_TAB}'!A${rowNum}:F${rowNum}`,
+          range: logRange,
         });
+        // Só limpa se a linha ainda é deste lançamento (o id fica na coluna F).
+        if (String(logRow.data.values?.[0]?.[5] ?? "") === transaction.id) {
+          await logSheets.spreadsheets.values.clear({
+            spreadsheetId: costSheet.spreadsheetId,
+            range: logRange,
+          });
+        }
       }
     }
   }
@@ -371,10 +533,11 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     // a ordem das linhas não importa (só é somado por SOMASES), então basta
     // limpar a linha, sem compactar nada nem reindexar outras referências.
     const { sheets: sheetsClient } = getGoogleClientsForCompany(transaction.company.googleRefreshToken);
-    await sheetsClient.spreadsheets.values.clear({
-      spreadsheetId,
-      range: `'${PAID_LOG_TAB}'!A${deletedRow1}:F${deletedRow1}`,
-    });
+    const logRange = `'${PAID_LOG_TAB}'!A${deletedRow1}:F${deletedRow1}`;
+    const logRow = await sheetsClient.spreadsheets.values.get({ spreadsheetId, range: logRange });
+    if (String(logRow.data.values?.[0]?.[5] ?? "") === transaction.id) {
+      await sheetsClient.spreadsheets.values.clear({ spreadsheetId, range: logRange });
+    }
     return;
   }
 
@@ -382,10 +545,17 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     // Mesmo raciocínio do histórico oculto — lista simples, sem bloco de dia
     // pra compactar.
     const { sheets: sheetsClient } = getGoogleClientsForCompany(transaction.company.googleRefreshToken);
-    await sheetsClient.spreadsheets.values.clear({
+    const recvRange = `'${RECEBIMENTOS_TAB}'!A${deletedRow1}:J${deletedRow1}`;
+    const recvRow = await sheetsClient.spreadsheets.values.get({
       spreadsheetId,
-      range: `'${RECEBIMENTOS_TAB}'!A${deletedRow1}:J${deletedRow1}`,
+      range: recvRange,
+      valueRenderOption: "UNFORMATTED_VALUE",
     });
+    if (
+      rowMatchesTransaction(recvRow.data.values?.[0], transaction.supplier.name, Number(transaction.amount))
+    ) {
+      await sheetsClient.spreadsheets.values.clear({ spreadsheetId, range: recvRange });
+    }
     return;
   }
 
@@ -418,10 +588,29 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     );
   }
 
-  const deletedIndex = deletedRow1 - blockStart1;
-  if (deletedIndex >= 0 && deletedIndex < blockRows.length) {
-    blockRows.splice(deletedIndex, 1);
+  // Confere se a linha guardada no banco ainda é MESMO deste lançamento
+  // (fornecedor + valor). Se a planilha mudou por fora, procura no bloco a
+  // linha que bate; se não achar nenhuma, não mexe em nada — apagar pela
+  // posição velha tirava a linha de OUTRO lançamento e deixava esta duplicada.
+  const storedIndex = deletedRow1 - blockStart1;
+  const amountNumber = Number(transaction.amount);
+  let deletedIndex = -1;
+  if (rowMatchesTransaction(currentRows[storedIndex], transaction.supplier.name, amountNumber)) {
+    deletedIndex = storedIndex;
+  } else {
+    deletedIndex = currentRows.findIndex((row) =>
+      rowMatchesTransaction(row, transaction.supplier.name, amountNumber)
+    );
   }
+  if (deletedIndex < 0) {
+    console.warn(
+      `Lançamento ${transaction.id} (${transaction.supplier.name}) não encontrado no bloco do dia ${day} de ${tabName} — nada foi apagado da planilha.`
+    );
+    return;
+  }
+  const actualDeletedRow1 = blockStart1 + deletedIndex;
+
+  blockRows.splice(deletedIndex, 1);
   blockRows.push([day, "", "", "", "", "", "", "", ""]);
 
   await sheets.spreadsheets.values.update({
@@ -448,7 +637,7 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
   });
   for (const t of affected) {
     const r = Number(t.sheetCellRef?.match(/\d+/)?.[0]);
-    if (r > deletedRow1 && r <= blockEnd1) {
+    if (r > actualDeletedRow1 && r <= blockEnd1) {
       await prisma.transaction.update({
         where: { id: t.id },
         data: { sheetCellRef: `${tabName}!A${r - 1}` },
