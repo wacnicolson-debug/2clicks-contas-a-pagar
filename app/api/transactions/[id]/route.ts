@@ -98,7 +98,7 @@ export async function PATCH(
       paid,
       fromPaymentList,
     });
-  const inPlace = sameDestination && !!transaction.sheetCellRef && !transaction.costLogCellRef;
+  const inPlace = sameDestination && !transaction.costLogCellRef;
   const previousAmount = Number(transaction.amount);
 
   if (!inPlace) {

@@ -21,7 +21,7 @@ export default async function LancamentosPage() {
 
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10">
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-6xl mx-auto">
         <header className="mb-6">
           <Link href="/dashboard" className="text-sm text-neutral-500">
             ← Voltar ao painel
@@ -37,7 +37,7 @@ export default async function LancamentosPage() {
             Nenhum lançamento ainda.
           </p>
         ) : (
-          <div className="bg-white border border-neutral-200 rounded-lg overflow-hidden">
+          <div className="bg-white border border-neutral-200 rounded-lg overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-neutral-50 text-left text-neutral-500 text-xs uppercase">
@@ -54,7 +54,7 @@ export default async function LancamentosPage() {
               <tbody>
                 {transactions.map((t) => (
                   <tr key={t.id} className="border-t border-neutral-100">
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2 whitespace-nowrap">
                       <Link href={`/lancamentos/${t.id}/editar`} className="text-sm text-emerald-700 hover:underline">
                         Editar
                       </Link>
@@ -77,10 +77,10 @@ export default async function LancamentosPage() {
                       })}
                     </td>
                     <td className="px-4 py-2 text-neutral-500">{t.category?.name ?? "—"}</td>
-                    <td className="px-4 py-2 text-neutral-500">
+                    <td className="px-4 py-2 text-neutral-500 whitespace-nowrap">
                       {t.paymentStatus ? STATUS_LABEL[t.paymentStatus] : "—"}
                     </td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-4 py-2 text-right whitespace-nowrap">
                       <DeleteButton id={t.id} label={t.supplier.name} />
                     </td>
                   </tr>

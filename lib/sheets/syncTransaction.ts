@@ -295,14 +295,35 @@ export async function updateTransactionRowInPlace(
 ): Promise<boolean> {
   const t = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
-    include: { supplier: true, category: true, company: true },
+    include: { supplier: true, category: true, company: true, document: true },
   });
   const token = t.company.googleRefreshToken;
-  if (!token || !t.sheetCellRef) return false;
+  if (!token) return false;
 
-  const [tabName, cell] = t.sheetCellRef.split("!");
-  const storedRow1 = Number(cell?.match(/\d+/)?.[0]);
-  if (!storedRow1) return false;
+  let tabName: string;
+  let storedRow1: number | null = null;
+  if (t.sheetCellRef) {
+    const [tab, cell] = t.sheetCellRef.split("!");
+    tabName = tab;
+    storedRow1 = Number(cell?.match(/\d+/)?.[0]) || null;
+  } else if (
+    sheetDestinationKey({
+      kind: t.kind,
+      dueDate: t.dueDate,
+      noteDate: t.noteDate,
+      paid: t.paid,
+      fromPaymentList: t.document?.kind === "PAYMENT_LIST",
+    }).startsWith("day:")
+  ) {
+    // Sem posição guardada (ex: uma edição antiga falhou no meio) — procura a
+    // linha no bloco do dia pelo conteúdo, em vez de gravar outra por cima.
+    tabName = MONTHS[t.dueDate.getUTCMonth()];
+  } else {
+    return false;
+  }
+  if (tabName === PAID_LOG_TAB || tabName === RECEBIMENTOS_TAB) {
+    if (!storedRow1) return false;
+  }
 
   const costDate = t.noteDate ?? t.dueDate;
   const sheetYear = tabName === PAID_LOG_TAB ? costDate.getUTCFullYear() : t.dueDate.getUTCFullYear();
@@ -359,7 +380,7 @@ export async function updateTransactionRowInPlace(
       blockStart1,
       blockEnd1,
     });
-    const storedIndex = storedRow1 - blockStart1;
+    const storedIndex = storedRow1 ? storedRow1 - blockStart1 : -1;
     const index = rowMatchesTransaction(rows[storedIndex], t.supplier.name, previousAmount)
       ? storedIndex
       : rows.findIndex((row) => rowMatchesTransaction(row, t.supplier.name, previousAmount));
