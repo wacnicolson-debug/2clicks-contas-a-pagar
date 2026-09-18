@@ -15,6 +15,7 @@ export function EditTransactionForm({
     kind: Kind;
     supplierName: string;
     noteNumber: string | null;
+    description: string | null;
     dueDate: string;
     amount: number;
     categoryName: string;
@@ -30,6 +31,7 @@ export function EditTransactionForm({
   const [amount, setAmount] = useState(transaction.amount.toFixed(2));
   const [dueDate, setDueDate] = useState(transaction.dueDate);
   const [noteNumber, setNoteNumber] = useState(transaction.noteNumber ?? "");
+  const [observacao, setObservacao] = useState(transaction.description ?? "");
   const [status, setStatus] = useState<Status>(
     isCliente ? (transaction.paid ? "PAGO" : "A_PAGAR") : (transaction.paymentStatus ?? "A_PAGAR")
   );
@@ -46,6 +48,7 @@ export function EditTransactionForm({
       amount: parseFloat(amount.replace(",", ".")),
       dueDate,
       noteNumber,
+      description: observacao,
     };
     if (isCliente) {
       body.paid = status === "PAGO";
@@ -136,6 +139,19 @@ export function EditTransactionForm({
             id="noteNumber"
             value={noteNumber}
             onChange={(e) => setNoteNumber(e.target.value)}
+            className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
+          />
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1" htmlFor="observacao">
+            Observação
+          </label>
+          <input
+            id="observacao"
+            value={observacao}
+            onChange={(e) => setObservacao(e.target.value)}
+            placeholder="vai direto pra coluna Observações da planilha"
             className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
           />
         </div>

@@ -32,6 +32,7 @@ export default async function EditTransactionPage({
         kind: transaction.kind,
         supplierName: transaction.supplier.name,
         noteNumber: transaction.noteNumber,
+        description: transaction.description,
         dueDate: transaction.dueDate.toISOString().slice(0, 10),
         amount: Number(transaction.amount),
         categoryName: transaction.category?.name ?? "",

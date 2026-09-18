@@ -9,6 +9,7 @@ type PatchBody = {
   amount?: number;
   dueDate?: string; // AAAA-MM-DD
   noteNumber?: string | null;
+  description?: string | null; // observação — vai pra coluna "Observações" da planilha
   paymentStatus?: "PAGO" | "A_PAGAR"; // fornecedor
   paid?: boolean; // cliente
 };
@@ -59,6 +60,8 @@ export async function PATCH(
   const dueDate = body.dueDate ? new Date(body.dueDate) : transaction.dueDate;
   const noteNumber =
     body.noteNumber !== undefined ? body.noteNumber?.trim() || null : transaction.noteNumber;
+  const description =
+    body.description !== undefined ? body.description?.trim() || null : transaction.description;
 
   let paymentStatus = transaction.paymentStatus;
   let paid = transaction.paid;
@@ -80,6 +83,7 @@ export async function PATCH(
       amount,
       dueDate,
       noteNumber,
+      description,
       paymentStatus,
       paid,
       sheetSyncStatus: "PENDING",
