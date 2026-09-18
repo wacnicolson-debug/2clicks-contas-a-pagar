@@ -108,7 +108,13 @@ export async function POST(
   // este lançamento (não o que já estava salvo no perfil, que é do sentido
   // oposto); no caso normal, os dois já são a mesma coisa.
   const effectiveKind = directionConflict ? body.kind : supplier.kind;
-  const effectivePaymentStatus = directionConflict ? body.paymentStatus : supplier.defaultStatus;
+  // "Pago" é fato de cada cobrança, não do fornecedor: sem resposta explícita
+  // nesta tela (fornecedor já conhecido), nota nova nasce "A pagar" — herdar o
+  // perfil mandava pro histórico de pagos nota que ainda não foi paga. Linha
+  // de extrato/relação de pagamentos é diferente: o dinheiro já saiu.
+  const isStatementSource = docPage.document.kind !== "INVOICES";
+  const effectivePaymentStatus: "PAGO" | "A_PAGAR" =
+    body.paymentStatus ?? (isStatementSource ? "PAGO" : "A_PAGAR");
   const effectivePaymentMethod = directionConflict ? body.paymentMethod : supplier.paymentMethod;
   const effectivePixKey = directionConflict ? body.pixKey : supplier.pixKey;
   const effectiveCategoryId = directionConflict ? (categoryId ?? null) : supplier.defaultCategoryId;
@@ -223,7 +229,11 @@ export async function POST(
   // Em conflito de sentido o perfil nem mudou, então não faz sentido
   // resolver as outras pendências dele com base nesta resposta.
   if (!supplier.alwaysAskCategory && !directionConflict) {
-    await resolveOtherPendingPagesForSupplier(supplier, session.userId);
+    await resolveOtherPendingPagesForSupplier(
+      supplier,
+      session.userId,
+      isStatementSource ? "A_PAGAR" : effectivePaymentStatus
+    );
   }
 
   return NextResponse.json({ ok: true });
@@ -231,11 +241,12 @@ export async function POST(
 
 async function resolveOtherPendingPagesForSupplier(
   supplier: Supplier,
-  createdByUserId: string
+  createdByUserId: string,
+  invoiceStatus: "PAGO" | "A_PAGAR"
 ) {
   const otherPendingPages = await prisma.documentPage.findMany({
     where: { supplierId: supplier.id, status: "AWAITING_USER_INPUT" },
-    include: { document: { select: { companyId: true } } },
+    include: { document: { select: { companyId: true, kind: true } } },
   });
 
   const kindKey = supplier.kind === "CLIENTE" ? "RECEIVABLE" : "PAYABLE";
@@ -244,6 +255,10 @@ async function resolveOtherPendingPagesForSupplier(
     const extraction = page.rawExtraction as unknown as ExtractedPage;
     const missingDate = extraction.installments.some((i) => !i.dueDate);
     if (missingDate) continue; // só o usuário sabe essa data, continua pendente
+
+    // Extrato/relação de pagamentos: já foi pago. Nota: só o que foi respondido agora.
+    const pageStatus: "PAGO" | "A_PAGAR" =
+      page.document.kind !== "INVOICES" ? "PAGO" : invoiceStatus;
 
     const createdIds: string[] = [];
     for (const [index, installment] of extraction.installments.entries()) {
@@ -256,14 +271,14 @@ async function resolveOtherPendingPagesForSupplier(
           supplierId: supplier.id,
           amount: installment.amount,
           dueDate: new Date(installment.dueDate!),
-          paymentStatus: supplier.kind === "FORNECEDOR" ? (supplier.defaultStatus ?? undefined) : undefined,
+          paymentStatus: supplier.kind === "FORNECEDOR" ? pageStatus : undefined,
           paymentMethod: supplier.kind === "FORNECEDOR" ? (supplier.paymentMethod ?? undefined) : undefined,
           pixKey: supplier.kind === "FORNECEDOR" && supplier.paymentMethod === "PIX" ? supplier.pixKey : undefined,
           categoryId: supplier.defaultCategoryId,
           installmentIndex: extraction.installments.length > 1 ? index + 1 : null,
           installmentTotal: extraction.installments.length > 1 ? extraction.installments.length : null,
           noteNumber: extraction.noteNumber,
-          paid: supplier.kind === "FORNECEDOR" && supplier.defaultStatus === "PAGO",
+          paid: supplier.kind === "FORNECEDOR" && pageStatus === "PAGO",
           createdByUserId,
         },
       });

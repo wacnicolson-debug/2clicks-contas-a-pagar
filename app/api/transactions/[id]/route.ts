@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import {
   clearTransactionFromSheet,
+  refMatchesDestination,
   sheetDestinationKey,
   syncTransactionToSheet,
   updateTransactionRowInPlace,
@@ -83,6 +84,13 @@ export async function PATCH(
   // se o vencimento ou o "pago" mudarem o destino — ou se o lançamento tem
   // também uma linha extra de custo em outro mês (nota de prazo longo).
   const fromPaymentList = transaction.document?.kind === "PAYMENT_LIST";
+  const newDestination = sheetDestinationKey({
+    kind: transaction.kind,
+    dueDate,
+    noteDate: transaction.noteDate,
+    paid,
+    fromPaymentList,
+  });
   const sameDestination =
     sheetDestinationKey({
       kind: transaction.kind,
@@ -90,15 +98,13 @@ export async function PATCH(
       noteDate: transaction.noteDate,
       paid: transaction.paid,
       fromPaymentList,
-    }) ===
-    sheetDestinationKey({
-      kind: transaction.kind,
-      dueDate,
-      noteDate: transaction.noteDate,
-      paid,
-      fromPaymentList,
-    });
-  const inPlace = sameDestination && !transaction.costLogCellRef;
+    }) === newDestination;
+  // Também precisa estar, de fato, na aba certa (ex: "a pagar" que ficou no
+  // histórico de pagos) — senão corrigir no lugar manteria o erro.
+  const inPlace =
+    sameDestination &&
+    !transaction.costLogCellRef &&
+    refMatchesDestination(transaction.sheetCellRef, newDestination);
   const previousAmount = Number(transaction.amount);
 
   // Só o que a linha antiga ocupa na planilha importa aqui: se for mudar de

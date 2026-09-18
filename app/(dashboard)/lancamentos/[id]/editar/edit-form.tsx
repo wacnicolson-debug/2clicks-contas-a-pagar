@@ -81,6 +81,38 @@ export function EditTransactionForm({
     router.refresh();
   }
 
+  async function handleResync() {
+    if (
+      !confirm(
+        "Reenviar pra planilha? Só grava se esse lançamento NÃO estiver lá — se já estiver, nada é alterado."
+      )
+    ) {
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    const res = await fetch(`/api/transactions/${transaction.id}/resync`, { method: "POST" });
+    setLoading(false);
+    if (!res.ok) {
+      setError("Não foi possível reenviar. Tente de novo.");
+      return;
+    }
+    const data = await res.json().catch(() => null);
+    const r = data?.result as
+      | { action: "exists"; tab: string; row: number }
+      | { action: "in_log"; row: number }
+      | { action: "created" }
+      | undefined;
+    setResult(
+      r?.action === "exists"
+        ? `Esse lançamento já está na planilha (aba ${r.tab}, linha ${r.row}). Nada foi gravado.`
+        : r?.action === "in_log"
+          ? `Esse lançamento está no histórico oculto "Custos Pagos" (linha ${r.row}), mas pelo status atual ele deveria estar na aba do dia. Nada foi gravado — use Editar e salve pra mover essa mesma linha.`
+          : "Esse lançamento não estava na planilha, então foi gravado agora."
+    );
+    router.refresh();
+  }
+
   if (result) {
     return (
       <div className="min-h-screen bg-neutral-50 px-4 py-10">
@@ -217,6 +249,15 @@ export function EditTransactionForm({
             Cancelar
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={handleResync}
+          disabled={loading}
+          className="w-full text-xs text-neutral-500 underline disabled:opacity-50"
+        >
+          Reenviar pra planilha (só grava se a linha não existir)
+        </button>
       </form>
     </div>
   );

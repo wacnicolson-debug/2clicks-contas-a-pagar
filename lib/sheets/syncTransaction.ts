@@ -282,6 +282,137 @@ export function sheetDestinationKey(t: {
   return `day:${y}-${m}-${t.dueDate.getUTCDate()}`;
 }
 
+export type ResyncResult =
+  | { action: "exists"; tab: string; row: number }
+  | { action: "in_log"; row: number }
+  | { action: "created" };
+
+/**
+ * Ação explícita "Reenviar pra planilha" (separada do Editar, que nunca cria
+ * linha): confere se o lançamento JÁ está na planilha e só grava se não
+ * estiver. Se ele estiver no histórico oculto Custos Pagos mas o destino
+ * certo é outra aba, não grava nada — guarda a posição pra o Editar conseguir
+ * mover a mesma linha.
+ */
+export async function resyncTransactionToSheet(transactionId: string): Promise<ResyncResult> {
+  const t = await prisma.transaction.findUniqueOrThrow({
+    where: { id: transactionId },
+    include: { supplier: true, company: true, document: true },
+  });
+  const token = t.company.googleRefreshToken;
+  if (!token) throw new Error("Empresa ainda não conectou o Google Sheets.");
+
+  const key = sheetDestinationKey({
+    kind: t.kind,
+    dueDate: t.dueDate,
+    noteDate: t.noteDate,
+    paid: t.paid,
+    fromPaymentList: t.document?.kind === "PAYMENT_LIST",
+  });
+  const amount = Number(t.amount);
+  const { sheets } = getGoogleClientsForCompany(token);
+
+  const setRef = async (ref: string) => {
+    if (t.sheetCellRef !== ref) {
+      await prisma.transaction.update({
+        where: { id: t.id },
+        data: { sheetCellRef: ref, sheetSyncStatus: "SYNCED" },
+      });
+    }
+  };
+
+  // 1) Histórico oculto de pagos — o id do lançamento fica na coluna F.
+  const costYear = (t.noteDate ?? t.dueDate).getUTCFullYear();
+  const costSheet = await prisma.companySheet.findUnique({
+    where: { companyId_year: { companyId: t.companyId, year: costYear } },
+  });
+  if (costSheet) {
+    const column = await sheets.spreadsheets.values.get({
+      spreadsheetId: costSheet.spreadsheetId,
+      range: `'${PAID_LOG_TAB}'!F1:F20000`,
+    });
+    const index = (column.data.values ?? []).findIndex((r) => String(r?.[0] ?? "") === t.id);
+    if (index >= 0) {
+      const row = index + 1;
+      await setRef(`${PAID_LOG_TAB}!A${row}`);
+      if (key.startsWith("log:")) return { action: "exists", tab: PAID_LOG_TAB, row };
+      return { action: "in_log", row };
+    }
+  }
+
+  // 2) Aba certa (bloco do dia ou mês de Recebimentos): procura por fornecedor + valor.
+  const year = t.dueDate.getUTCFullYear();
+  const companySheet = await prisma.companySheet.findUnique({
+    where: { companyId_year: { companyId: t.companyId, year } },
+  });
+  if (companySheet && (key.startsWith("day:") || key.startsWith("recv:"))) {
+    const spreadsheetId = companySheet.spreadsheetId;
+    let tab: string;
+    let firstRow1: number;
+    let rows: unknown[][];
+    if (key.startsWith("recv:")) {
+      const { dataStart0, dataEnd0 } = recebimentosMonthBlockRows(t.dueDate.getUTCMonth());
+      tab = RECEBIMENTOS_TAB;
+      firstRow1 = dataStart0 + 1;
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId,
+        range: `'${RECEBIMENTOS_TAB}'!A${firstRow1}:J${dataEnd0}`,
+        valueRenderOption: "UNFORMATTED_VALUE",
+      });
+      rows = (res.data.values ?? []) as unknown[][];
+    } else {
+      const day = t.dueDate.getUTCDate();
+      tab = MONTHS[t.dueDate.getUTCMonth()];
+      firstRow1 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY + 1;
+      rows = (
+        await readDayBlockLayout({
+          sheets,
+          spreadsheetId,
+          tabName: tab,
+          blockStart1: firstRow1,
+          blockEnd1: firstRow1 + ROWS_PER_DAY - 1,
+        })
+      ).rows;
+    }
+
+    const matches = rows
+      .map((row, i) => (rowMatchesTransaction(row, t.supplier.name, amount) ? i : -1))
+      .filter((i) => i >= 0);
+    // Lançamentos idênticos (mesmo fornecedor, valor e dia) precisam de uma
+    // linha cada — só considera "já existe" se a planilha tem linhas pra todos.
+    const twins = await prisma.transaction.count({
+      where: {
+        companyId: t.companyId,
+        supplierId: t.supplierId,
+        amount: t.amount,
+        dueDate: t.dueDate,
+        kind: t.kind,
+      },
+    });
+    if (matches.length >= twins && matches.length > 0) {
+      const row = firstRow1 + matches[0];
+      await setRef(`${tab}!A${row}`);
+      return { action: "exists", tab, row };
+    }
+  }
+
+  await syncTransactionToSheet(t.id);
+  return { action: "created" };
+}
+
+/**
+ * A linha guardada no banco está na aba que o destino atual exige? Um
+ * lançamento "a pagar" que ficou no histórico de pagos (ou o contrário) está
+ * no lugar errado: corrigir "no lugar" só manteria o erro, então precisa mover.
+ */
+export function refMatchesDestination(sheetCellRef: string | null, destinationKey: string): boolean {
+  if (!sheetCellRef) return true; // sem posição guardada: nada a comparar
+  const tab = sheetCellRef.split("!")[0];
+  if (destinationKey.startsWith("log:")) return tab === PAID_LOG_TAB;
+  if (destinationKey.startsWith("recv:")) return tab === RECEBIMENTOS_TAB;
+  return tab !== PAID_LOG_TAB && tab !== RECEBIMENTOS_TAB;
+}
+
 /**
  * Corrige a linha JÁ EXISTENTE do lançamento (mesmo lugar na planilha), em vez
  * de apagar e criar de novo. Confere que a linha guardada ainda é dele
