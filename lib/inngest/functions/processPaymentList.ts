@@ -106,9 +106,13 @@ export const processPaymentList = inngest.createFunction(
     let anyAwaitingInput = false;
 
     for (const [index, line] of lines.entries()) {
-      await step.run(`persist-line-${line.lineNumber}`, async () => {
+      // Só cria os registros no banco aqui — a sincronização com a planilha
+      // (chamada de rede pro Google, pode falhar) fica num step separado
+      // logo abaixo, pra um retry do Inngest não recriar o lançamento inteiro.
+      const result = await step.run(`persist-line-${line.lineNumber}`, async () => {
         if (alreadyLaunchedFlags[index]) {
-          return; // essa combinação (favorecido+data+valor) já foi lançada antes
+          return { needsInput: false, transactionId: null as string | null };
+          // essa combinação (favorecido+data+valor) já foi lançada antes
         }
 
         const lineDate = new Date(line.date);
@@ -144,12 +148,14 @@ export const processPaymentList = inngest.createFunction(
         });
 
         if (needsInput) {
-          anyAwaitingInput = true;
-          return; // aguarda o usuário responder na tela de perguntas
+          return { needsInput: true, transactionId: null as string | null };
+          // aguarda o usuário responder na tela de perguntas
         }
 
         // Fornecedor já conhecido: lança automático, sempre como Pago (o
-        // dinheiro já saiu da conta — é isso que essa lista representa).
+        // dinheiro já saiu da conta — é isso que essa lista representa). A
+        // sincronização com a planilha fica de fora deste step de propósito
+        // (ver comentário acima do loop) — só cria os registros aqui.
         const transaction = await prisma.transaction.create({
           data: {
             companyId: document.companyId,
@@ -168,8 +174,17 @@ export const processPaymentList = inngest.createFunction(
             createdByUserId: document.uploadedById,
           },
         });
-        await syncTransactionToSheet(transaction.id);
+        return { needsInput: false, transactionId: transaction.id };
       });
+
+      if (result.needsInput) {
+        anyAwaitingInput = true;
+      }
+      if (result.transactionId) {
+        await step.run(`sync-sheet-${line.lineNumber}-${result.transactionId}`, () =>
+          syncTransactionToSheet(result.transactionId!)
+        );
+      }
     }
 
     await step.run("finalize-document-status", () =>

@@ -110,9 +110,13 @@ export const processStatement = inngest.createFunction(
     let anyAwaitingInput = false;
 
     for (const [index, line] of lines.entries()) {
-      await step.run(`persist-line-${line.lineNumber}`, async () => {
+      // Só cria os registros no banco aqui — a sincronização com a planilha
+      // (chamada de rede pro Google, pode falhar) fica num step separado
+      // logo abaixo, pra um retry do Inngest não recriar o lançamento inteiro.
+      const result = await step.run(`persist-line-${line.lineNumber}`, async () => {
         if (duplicateFlags[index]) {
-          return; // já existe uma linha igual salva antes — extrato reenviado, ignora
+          return { needsInput: false, transactionId: null as string | null };
+          // já existe uma linha igual salva antes — extrato reenviado, ignora
         }
 
         const lineDate = new Date(line.date);
@@ -157,7 +161,8 @@ export const processStatement = inngest.createFunction(
               status: "MATCHED",
             },
           });
-          return; // bateu com uma nota já lançada — só marca conferido, não mexe em mais nada
+          return { needsInput: false, transactionId: null as string | null };
+          // bateu com uma nota já lançada — só marca conferido, não mexe em mais nada
         }
 
         // Não bateu com nada — trata como cobrança nova, igual ao fluxo de
@@ -195,7 +200,6 @@ export const processStatement = inngest.createFunction(
         });
 
         if (needsInput) {
-          anyAwaitingInput = true;
           await prisma.bankStatementLine.create({
             data: {
               companyId: document.companyId,
@@ -207,10 +211,13 @@ export const processStatement = inngest.createFunction(
               status: "ORPHAN",
             },
           });
-          return; // aguarda o usuário responder na tela de perguntas
+          return { needsInput: true, transactionId: null as string | null };
+          // aguarda o usuário responder na tela de perguntas
         }
 
-        // Fornecedor já conhecido: lança automático, sempre como Pago.
+        // Fornecedor já conhecido: lança automático, sempre como Pago. A
+        // sincronização com a planilha fica de fora deste step de propósito
+        // (ver comentário acima do loop) — só cria os registros aqui.
         const transaction = await prisma.transaction.create({
           data: {
             companyId: document.companyId,
@@ -228,7 +235,6 @@ export const processStatement = inngest.createFunction(
             createdByUserId: document.uploadedById,
           },
         });
-        await syncTransactionToSheet(transaction.id);
 
         await prisma.bankStatementLine.create({
           data: {
@@ -242,7 +248,18 @@ export const processStatement = inngest.createFunction(
             status: "CLASSIFIED",
           },
         });
+
+        return { needsInput: false, transactionId: transaction.id };
       });
+
+      if (result.needsInput) {
+        anyAwaitingInput = true;
+      }
+      if (result.transactionId) {
+        await step.run(`sync-sheet-${line.lineNumber}-${result.transactionId}`, () =>
+          syncTransactionToSheet(result.transactionId!)
+        );
+      }
     }
 
     await step.run("finalize-document-status", () =>

@@ -48,7 +48,15 @@ export const processDocument = inngest.createFunction(
     let anyAwaitingInput = false;
 
     for (const page of extractedPages) {
-      await step.run(`persist-page-${page.pageNumber}`, async () => {
+      // Só cria os registros no banco (DocumentPage + Transaction) — a
+      // sincronização com a planilha fica num step separado, mais abaixo:
+      // se ela falhar (ex: erro do Google) o Inngest tenta de novo só o
+      // step de sync, sem re-executar esta criação (que já ficou memorizada
+      // como concluída) — evita duplicar o lançamento inteiro no retry, e
+      // evita o oposto também (retry pulando a sincronização pra sempre
+      // porque a checagem de "já lançado" abaixo acharia a transação já
+      // criada na tentativa anterior).
+      const result = await step.run(`persist-page-${page.pageNumber}`, async () => {
         if (page.duplicateOfPageNumber) {
           // 2ª/3ª via, folha de continuação, ou anexo sem cobrança própria da
           // mesma nota de uma página anterior — só registra, não lança de novo.
@@ -61,7 +69,7 @@ export const processDocument = inngest.createFunction(
               status: "DONE",
             },
           });
-          return;
+          return { needsInput: false, transactionIds: [] as string[] };
         }
 
         const supplier = await resolveSupplier({
@@ -111,15 +119,17 @@ export const processDocument = inngest.createFunction(
         });
 
         if (needsInput) {
-          anyAwaitingInput = true;
-          return; // aguarda o usuário responder na tela de perguntas
+          return { needsInput: true, transactionIds: [] as string[] };
         }
 
         // Fornecedor já conhecido: lança automático, sem perguntar de novo.
+        const transactionIds: string[] = [];
         for (const [index, installment] of page.installments.entries()) {
           // Mesmo fornecedor + mesma data + mesmo valor já lançado antes (nota
           // repetida num arquivo diferente, ou o próprio arquivo reenviado com
-          // outro nome/formato) — não duplica, só ignora essa parcela.
+          // outro nome/formato) — não duplica, retoma a sincronização dela
+          // em vez de criar de novo (cobre tanto reenvio de arquivo quanto
+          // um retry deste mesmo step que já tinha criado na tentativa anterior).
           const alreadyLaunched = await prisma.transaction.findFirst({
             where: {
               companyId: document.companyId,
@@ -129,6 +139,7 @@ export const processDocument = inngest.createFunction(
             },
           });
           if (alreadyLaunched) {
+            transactionIds.push(alreadyLaunched.id);
             continue;
           }
 
@@ -157,9 +168,21 @@ export const processDocument = inngest.createFunction(
               createdByUserId: document.uploadedById,
             },
           });
-          await syncTransactionToSheet(transaction.id);
+          transactionIds.push(transaction.id);
         }
+        return { needsInput: false, transactionIds };
       });
+
+      if (result.needsInput) {
+        anyAwaitingInput = true;
+        continue;
+      }
+
+      for (const transactionId of result.transactionIds) {
+        await step.run(`sync-sheet-${page.pageNumber}-${transactionId}`, () =>
+          syncTransactionToSheet(transactionId)
+        );
+      }
     }
 
     await step.run("finalize-document-status", () =>

@@ -55,6 +55,13 @@ export async function POST(
     return NextResponse.json({ error: "Página não encontrada." }, { status: 404 });
   }
 
+  if (docPage.status === "DONE") {
+    // Página já respondida antes — reenvio do formulário (duplo clique, ou
+    // usuário tentando de novo depois de um erro que na verdade já tinha
+    // completado). Não cria lançamento novo, só confirma que já está feito.
+    return NextResponse.json({ ok: true });
+  }
+
   // categoryId só muda se o usuário de fato mandou uma categoria nesta resposta
   // (fornecedor já conhecido, pedindo só a data, não reenvia categoria nenhuma).
   let categoryId: string | null | undefined = undefined;
@@ -149,36 +156,55 @@ export async function POST(
     }
   }
 
-  const createdIds: string[] = [];
-  const affectedYears = new Set<number>();
   const noteDate = body.noteDate ? new Date(body.noteDate) : null;
-  for (const [index, installment] of installments.entries()) {
-    const dueDateStr = installment.dueDate ?? body.manualDueDates![index];
-    affectedYears.add(new Date(dueDateStr).getUTCFullYear());
-    if (noteDate) affectedYears.add(noteDate.getUTCFullYear());
-    const transaction = await prisma.transaction.create({
-      data: {
-        companyId: session.companyId,
-        kind: kindKey,
-        documentId: docPage.documentId,
-        documentPageId: docPage.id,
-        supplierId: supplier.id,
-        amount: installment.amount,
-        dueDate: new Date(dueDateStr),
-        noteDate,
-        description: body.description?.trim() || null,
-        paymentStatus: effectiveKind === "FORNECEDOR" ? (effectivePaymentStatus ?? undefined) : undefined,
-        paymentMethod: effectiveKind === "FORNECEDOR" ? (effectivePaymentMethod ?? undefined) : undefined,
-        pixKey: effectiveKind === "FORNECEDOR" && effectivePaymentMethod === "PIX" ? effectivePixKey : undefined,
-        categoryId: effectiveCategoryId,
-        installmentIndex: installments.length > 1 ? index + 1 : null,
-        installmentTotal: installments.length > 1 ? installments.length : null,
-        noteNumber: extraction.noteNumber,
-        paid: effectiveKind === "FORNECEDOR" && effectivePaymentStatus === "PAGO",
-        createdByUserId: session.userId,
-      },
-    });
-    createdIds.push(transaction.id);
+  const affectedYears = new Set<number>();
+
+  // Se uma tentativa anterior já criou os lançamentos dessa página mas não
+  // terminou (ex: erro ao sincronizar com a planilha — Google fora do ar,
+  // token expirado etc — a página fica sem status DONE e permite reenvio),
+  // não cria tudo de novo: só retoma os que já existem. Sem isso, cada
+  // reenvio duplicava o lançamento inteiro.
+  const existingTransactions = await prisma.transaction.findMany({
+    where: { documentPageId: docPage.id },
+  });
+
+  let createdIds: string[];
+  if (existingTransactions.length > 0) {
+    createdIds = existingTransactions.map((t) => t.id);
+    for (const t of existingTransactions) {
+      affectedYears.add(t.dueDate.getUTCFullYear());
+      if (t.noteDate) affectedYears.add(t.noteDate.getUTCFullYear());
+    }
+  } else {
+    createdIds = [];
+    for (const [index, installment] of installments.entries()) {
+      const dueDateStr = installment.dueDate ?? body.manualDueDates![index];
+      affectedYears.add(new Date(dueDateStr).getUTCFullYear());
+      if (noteDate) affectedYears.add(noteDate.getUTCFullYear());
+      const transaction = await prisma.transaction.create({
+        data: {
+          companyId: session.companyId,
+          kind: kindKey,
+          documentId: docPage.documentId,
+          documentPageId: docPage.id,
+          supplierId: supplier.id,
+          amount: installment.amount,
+          dueDate: new Date(dueDateStr),
+          noteDate,
+          description: body.description?.trim() || null,
+          paymentStatus: effectiveKind === "FORNECEDOR" ? (effectivePaymentStatus ?? undefined) : undefined,
+          paymentMethod: effectiveKind === "FORNECEDOR" ? (effectivePaymentMethod ?? undefined) : undefined,
+          pixKey: effectiveKind === "FORNECEDOR" && effectivePaymentMethod === "PIX" ? effectivePixKey : undefined,
+          categoryId: effectiveCategoryId,
+          installmentIndex: installments.length > 1 ? index + 1 : null,
+          installmentTotal: installments.length > 1 ? installments.length : null,
+          noteNumber: extraction.noteNumber,
+          paid: effectiveKind === "FORNECEDOR" && effectivePaymentStatus === "PAGO",
+          createdByUserId: session.userId,
+        },
+      });
+      createdIds.push(transaction.id);
+    }
   }
 
   for (const transactionId of createdIds) {
@@ -260,29 +286,38 @@ async function resolveOtherPendingPagesForSupplier(
     const pageStatus: "PAGO" | "A_PAGAR" =
       page.document.kind !== "INVOICES" ? "PAGO" : invoiceStatus;
 
-    const createdIds: string[] = [];
-    for (const [index, installment] of extraction.installments.entries()) {
-      const transaction = await prisma.transaction.create({
-        data: {
-          companyId: page.document.companyId,
-          kind: kindKey,
-          documentId: page.documentId,
-          documentPageId: page.id,
-          supplierId: supplier.id,
-          amount: installment.amount,
-          dueDate: new Date(installment.dueDate!),
-          paymentStatus: supplier.kind === "FORNECEDOR" ? pageStatus : undefined,
-          paymentMethod: supplier.kind === "FORNECEDOR" ? (supplier.paymentMethod ?? undefined) : undefined,
-          pixKey: supplier.kind === "FORNECEDOR" && supplier.paymentMethod === "PIX" ? supplier.pixKey : undefined,
-          categoryId: supplier.defaultCategoryId,
-          installmentIndex: extraction.installments.length > 1 ? index + 1 : null,
-          installmentTotal: extraction.installments.length > 1 ? extraction.installments.length : null,
-          noteNumber: extraction.noteNumber,
-          paid: supplier.kind === "FORNECEDOR" && pageStatus === "PAGO",
-          createdByUserId,
-        },
-      });
-      createdIds.push(transaction.id);
+    // Mesma proteção contra duplicata do handler principal: se uma tentativa
+    // anterior já criou os lançamentos dessa página (mas travou antes de
+    // marcar DONE, ex: falha ao sincronizar), retoma em vez de criar de novo.
+    const existingForPage = await prisma.transaction.findMany({
+      where: { documentPageId: page.id },
+    });
+
+    const createdIds: string[] = existingForPage.length > 0 ? existingForPage.map((t) => t.id) : [];
+    if (existingForPage.length === 0) {
+      for (const [index, installment] of extraction.installments.entries()) {
+        const transaction = await prisma.transaction.create({
+          data: {
+            companyId: page.document.companyId,
+            kind: kindKey,
+            documentId: page.documentId,
+            documentPageId: page.id,
+            supplierId: supplier.id,
+            amount: installment.amount,
+            dueDate: new Date(installment.dueDate!),
+            paymentStatus: supplier.kind === "FORNECEDOR" ? pageStatus : undefined,
+            paymentMethod: supplier.kind === "FORNECEDOR" ? (supplier.paymentMethod ?? undefined) : undefined,
+            pixKey: supplier.kind === "FORNECEDOR" && supplier.paymentMethod === "PIX" ? supplier.pixKey : undefined,
+            categoryId: supplier.defaultCategoryId,
+            installmentIndex: extraction.installments.length > 1 ? index + 1 : null,
+            installmentTotal: extraction.installments.length > 1 ? extraction.installments.length : null,
+            noteNumber: extraction.noteNumber,
+            paid: supplier.kind === "FORNECEDOR" && pageStatus === "PAGO",
+            createdByUserId,
+          },
+        });
+        createdIds.push(transaction.id);
+      }
     }
 
     for (const transactionId of createdIds) {
