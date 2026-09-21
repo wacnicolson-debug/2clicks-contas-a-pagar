@@ -106,6 +106,10 @@ model Category {
   name           String
   normalizedName String // sem acento/pontuação, pra "matéria-prima - tecidos" e "matéria prima - tecidos" caírem na mesma categoria
   createdAt      DateTime @default(now())
+  // Categorias como Folha de Pagamento e Impostos variam pouco de mês pra mês
+  // (ex: 13º salário concentrado em dezembro) — na aba de Orçamento, essas
+  // aparecem como a média do ano corrente em vez do valor real de cada mês.
+  budgetSmoothed Boolean  @default(false)
 
   suppliers    Supplier[]
   transactions Transaction[]

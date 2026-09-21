@@ -2,8 +2,11 @@ import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import {
   COST_TAB,
+  BUDGET_TAB,
   buildCostSummaryValues,
   buildCostSummaryStructuralRequests,
+  buildBudgetValues,
+  buildBudgetStructuralRequests,
 } from "./provisionCompanySheet";
 
 /**
@@ -67,6 +70,69 @@ export async function rebuildCostSummaryTab(companyId: string, year: number): Pr
     spreadsheetId,
     requestBody: {
       requests: buildCostSummaryStructuralRequests(newSheetId, categoryNames),
+    },
+  });
+}
+
+/**
+ * Reconstrói do zero a aba "Orçamento" — mesmo padrão delete+recreate de
+ * `rebuildCostSummaryTab` acima. Precisa rodar sempre que a Classificação de
+ * Custos muda (categoria nova/removida) OU quando o `budgetSmoothed` de uma
+ * categoria muda, já que a fórmula referencia as células da outra aba por
+ * posição (linha por categoria, na mesma ordem).
+ */
+export async function rebuildBudgetTab(companyId: string, year: number): Promise<void> {
+  const companySheet = await prisma.companySheet.findUnique({
+    where: { companyId_year: { companyId, year } },
+  });
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId } });
+  if (!companySheet || !company.googleRefreshToken) return; // planilha desse ano ainda não existe
+
+  const categories = await prisma.category.findMany({
+    where: { companyId },
+    orderBy: { createdAt: "asc" },
+    select: { name: true, budgetSmoothed: true },
+  });
+  if (categories.length === 0) return;
+
+  const { sheets } = getGoogleClientsForCompany(company.googleRefreshToken);
+  const spreadsheetId = companySheet.spreadsheetId;
+
+  const meta = await sheets.spreadsheets.get({ spreadsheetId });
+  const existing = meta.data.sheets?.find((s) => s.properties?.title === BUDGET_TAB);
+  const oldSheetId = existing?.properties?.sheetId;
+  const index = existing?.properties?.index;
+
+  const deleteAndAdd = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [
+        ...(oldSheetId !== undefined && oldSheetId !== null
+          ? [{ deleteSheet: { sheetId: oldSheetId } }]
+          : []),
+        { addSheet: { properties: { title: BUDGET_TAB, index: index ?? undefined } } },
+      ],
+    },
+  });
+
+  const newSheetId = deleteAndAdd.data.replies?.find((r) => r.addSheet)?.addSheet?.properties
+    ?.sheetId;
+  if (newSheetId === undefined || newSheetId === null) {
+    throw new Error("Falha ao recriar a aba de Orçamento.");
+  }
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: [buildBudgetValues(categories)],
+    },
+  });
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: buildBudgetStructuralRequests(newSheetId, categories),
     },
   });
 }

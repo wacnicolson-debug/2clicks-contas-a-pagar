@@ -46,6 +46,25 @@ export async function exchangeCodeForRefreshToken(code: string): Promise<string>
   return tokens.refresh_token;
 }
 
+/**
+ * O refresh_token guardado ainda funciona? Pode ter expirado/sido revogado
+ * (ex: usuário revogou acesso em myaccount.google.com/permissions, ou o app
+ * ainda está em modo "Testing" no Google Cloud, que expira o token sozinho
+ * depois de alguns dias) — sem checar, o painel mostrava "Google conectado"
+ * mesmo com a sincronização quebrada, e o usuário só descobria quando um
+ * lançamento sumia da planilha.
+ */
+export async function isGoogleTokenValid(refreshToken: string): Promise<boolean> {
+  const client = getOAuthClient();
+  client.setCredentials({ refresh_token: refreshToken });
+  try {
+    await client.getAccessToken();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Clientes do Sheets/Drive autenticados como a própria empresa (dona real da planilha). */
 export function getGoogleClientsForCompany(refreshToken: string): {
   sheets: sheets_v4.Sheets;

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
+import { isGoogleTokenValid } from "@/lib/sheets/client";
 import { LogoutButton } from "./logout-button";
 import { DeletePendingButton } from "./delete-pending-button";
 import { RemoveSheetButton } from "./remove-sheet-button";
@@ -27,6 +28,14 @@ export default async function DashboardPage({
     where: { id: session.companyId },
     include: { sheets: { orderBy: { year: "desc" } } },
   });
+
+  // Existe um token guardado, mas ele ainda funciona? Pode ter expirado ou
+  // sido revogado — sem essa checagem o painel mostrava tudo certo mesmo com
+  // a sincronização quebrada, e só dava pra notar quando um lançamento
+  // sumia da planilha.
+  const googleTokenValid = company.googleRefreshToken
+    ? await isGoogleTokenValid(company.googleRefreshToken)
+    : null;
 
   const today = startOfDay(new Date());
   const tomorrow = new Date(today);
@@ -90,6 +99,20 @@ export default async function DashboardPage({
               Conectar Google Sheets
             </a>
           </div>
+        ) : googleTokenValid === false ? (
+          <div className="mb-8 bg-red-50 border border-red-200 rounded-lg p-5">
+            <h2 className="text-sm font-semibold mb-1">A conexão com o Google caiu</h2>
+            <p className="text-sm text-neutral-600 mb-3">
+              O acesso à sua planilha expirou ou foi revogado — os lançamentos
+              não estão mais sendo sincronizados. Reconecte pra normalizar.
+            </p>
+            <a
+              href="/api/auth/google/connect"
+              className="inline-block bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium"
+            >
+              Reconectar Google Sheets
+            </a>
+          </div>
         ) : (
           <div className="mb-8 flex flex-wrap gap-x-4 gap-y-1 text-sm">
             {company.sheets.map((sheet) => (
@@ -140,6 +163,12 @@ export default async function DashboardPage({
         )}
 
         <div className="flex flex-wrap gap-3 mb-8">
+          <Link
+            href="/documentos/capturar"
+            className="bg-emerald-800 text-white rounded-md px-4 py-2 text-sm font-medium"
+          >
+            Tirar foto
+          </Link>
           <Link
             href="/documentos/upload"
             className="bg-emerald-700 text-white rounded-md px-4 py-2 text-sm font-medium"

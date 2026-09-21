@@ -83,12 +83,3 @@ export function rowMatchesTransaction(
   });
   return hasSupplier && hasAmount;
 }
-
-/** Linha já tem algo além do "Dia" pré-preenchido (ex: lançamento digitado direto na planilha). */
-export function isRowOccupied(row: unknown[] | undefined, offset: number): boolean {
-  for (let c = offset + 1; c < offset + APP_COLUMN_COUNT; c++) {
-    const value = row?.[c];
-    if (value !== undefined && value !== null && String(value).trim() !== "") return true;
-  }
-  return false;
-}

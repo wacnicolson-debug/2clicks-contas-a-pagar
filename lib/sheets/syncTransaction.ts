@@ -6,7 +6,6 @@ import { toBRDateString } from "@/lib/utils/formatDateBR";
 import {
   APP_COLUMN_COUNT,
   columnLetter,
-  isRowOccupied,
   readDayBlockLayout,
   rowMatchesTransaction,
 } from "./dayBlockLayout";
@@ -112,60 +111,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   const year = dueDate.getUTCFullYear();
   const monthName = MONTHS[dueDate.getUTCMonth()];
   const day = dueDate.getUTCDate();
-  const spreadsheetId = await getOrCreateCompanySheetForYear(transaction.companyId, year);
-
-  const reservedRow0 = await reserveNextRowForDay({
-    companyId: transaction.companyId,
-    year,
-    tabName: monthName,
-    day,
-  });
-
-  const { sheets } = getGoogleClientsForCompany(googleRefreshToken);
-
-  // O contador só conhece o que o app gravou. Se o usuário digitou algo direto
-  // na planilha nessa linha, pula pra próxima vazia em vez de gravar por cima;
-  // e a coluna "Dia" pode não ser mais a A (colunas inseridas antes dela).
-  const blockStart0 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY;
-  const blockEnd0 = blockStart0 + ROWS_PER_DAY; // exclusivo
-  const { offset, rows: currentBlock } = await readDayBlockLayout({
-    sheets,
-    spreadsheetId,
-    tabName: monthName,
-    blockStart1: blockStart0 + 1,
-    blockEnd1: blockEnd0,
-  });
-  let rowIndex0 = reservedRow0;
-  while (rowIndex0 < blockEnd0 && isRowOccupied(currentBlock[rowIndex0 - blockStart0], offset)) {
-    rowIndex0++;
-  }
-  if (rowIndex0 >= blockEnd0) {
-    throw new Error(
-      `As ${ROWS_PER_DAY} linhas reservadas para o dia ${day} de ${monthName}/${year} já estão cheias.`
-    );
-  }
-  if (rowIndex0 !== reservedRow0) {
-    await prisma.sheetRowIndex.updateMany({
-      where: {
-        companyId: transaction.companyId,
-        year,
-        tabName: monthName,
-        key: `day-${day}`,
-        rowIndex: { lt: rowIndex0 + 1 },
-      },
-      data: { rowIndex: rowIndex0 + 1 },
-    });
-  }
-
-  const rowValues = buildDayRowValues(transaction, costMonthDiffers);
-
-  const row1Based = rowIndex0 + 1;
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `'${monthName}'!${columnLetter(offset)}${row1Based}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${row1Based}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: [rowValues] },
-  });
+  await getOrCreateCompanySheetForYear(transaction.companyId, year);
 
   let costLogCellRef: string | null = null;
   if (costMonthDiffers) {
@@ -185,14 +131,119 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
     });
   }
 
-  await prisma.transaction.update({
-    where: { id: transaction.id },
-    data: {
-      sheetSyncStatus: "SYNCED",
-      sheetCellRef: `${monthName}!A${row1Based}`,
-      costLogCellRef,
-    },
+  // Reconstrói o bloco de 30 linhas do dia inteiro, ordenado por valor — já
+  // deixa este lançamento (já salvo no banco nesse ponto) na posição certa,
+  // junto com os outros do mesmo dia.
+  await rebuildDayBlock(transaction.companyId, year, monthName, day);
+
+  if (costLogCellRef) {
+    await prisma.transaction.update({
+      where: { id: transaction.id },
+      data: { costLogCellRef },
+    });
+  }
+}
+
+/**
+ * Reconstrói do zero o bloco de 30 linhas de UM dia (aba do mês), com os
+ * lançamentos ordenados por valor crescente — chamada sempre que o conteúdo
+ * do bloco muda (lançamento novo, exclusão, edição de valor/data/pago),
+ * em vez de inserir/mover 1 linha por vez. O banco é sempre a fonte de
+ * verdade: a planilha é reescrita inteira a partir dele, então nunca fica
+ * dessincronizada por causa de edição manual ou retry.
+ *
+ * `excludeTransactionId` existe pra exclusão: `clearTransactionFromSheet`
+ * chama isto ANTES de apagar a linha do Postgres (precisa ler os outros
+ * campos do lançamento antes), então o excluído ainda existe no banco nesse
+ * momento — sem o exclude ele continuaria aparecendo no bloco reconstruído.
+ */
+export async function rebuildDayBlock(
+  companyId: string,
+  year: number,
+  monthName: string,
+  day: number,
+  options?: { excludeTransactionId?: string }
+): Promise<void> {
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId } });
+  if (!company.googleRefreshToken) return;
+
+  const companySheet = await prisma.companySheet.findUnique({
+    where: { companyId_year: { companyId, year } },
   });
+  if (!companySheet) return;
+
+  const monthIndex0 = MONTHS.indexOf(monthName);
+  const startOfDay = new Date(Date.UTC(year, monthIndex0, day));
+  const startOfNextDay = new Date(Date.UTC(year, monthIndex0, day + 1));
+
+  const candidates = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      kind: "PAYABLE",
+      dueDate: { gte: startOfDay, lt: startOfNextDay },
+      ...(options?.excludeTransactionId ? { id: { not: options.excludeTransactionId } } : {}),
+    },
+    include: { supplier: true, category: true, document: true },
+  });
+
+  // Mesma regra de roteamento de `syncTransactionToSheet`: pago antes do
+  // vencimento (ou vindo de Relação de Pagamentos) não ocupa linha no bloco
+  // do dia — já está no histórico oculto "Custos Pagos".
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+  const blockTransactions = candidates
+    .filter((t) => {
+      const alreadyOverdue = t.dueDate < startOfToday;
+      const fromPaymentList = t.document?.kind === "PAYMENT_LIST";
+      return !(t.paid && (fromPaymentList || !alreadyOverdue));
+    })
+    .sort((a, b) => Number(a.amount) - Number(b.amount));
+
+  if (blockTransactions.length > ROWS_PER_DAY) {
+    throw new Error(
+      `Mais de ${ROWS_PER_DAY} lançamentos no dia ${day} de ${monthName}/${year} — as linhas reservadas não são suficientes.`
+    );
+  }
+
+  const { sheets } = getGoogleClientsForCompany(company.googleRefreshToken);
+  const spreadsheetId = companySheet.spreadsheetId;
+  const blockStart1 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY + 1;
+  const blockEnd1 = blockStart1 + ROWS_PER_DAY - 1;
+
+  // A coluna "Dia" pode não ser mais a A (usuário inseriu coluna(s) antes).
+  const { offset } = await readDayBlockLayout({
+    sheets,
+    spreadsheetId,
+    tabName: monthName,
+    blockStart1,
+    blockEnd1,
+  });
+
+  const blockRows: (string | number)[][] = blockTransactions.map((t) => {
+    const tCostDate = t.noteDate ?? t.dueDate;
+    const tCostMonthDiffers =
+      tCostDate.getUTCFullYear() !== t.dueDate.getUTCFullYear() ||
+      tCostDate.getUTCMonth() !== t.dueDate.getUTCMonth();
+    return buildDayRowValues(t, tCostMonthDiffers);
+  });
+  while (blockRows.length < ROWS_PER_DAY) {
+    blockRows.push([day, "", "", "", "", "", "", "", ""]);
+  }
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `'${monthName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: blockRows },
+  });
+
+  for (const [index, t] of blockTransactions.entries()) {
+    const row1 = blockStart1 + index;
+    await prisma.transaction.update({
+      where: { id: t.id },
+      data: { sheetSyncStatus: "SYNCED", sheetCellRef: `${monthName}!A${row1}` },
+    });
+  }
 }
 
 type DayRowSource = {
@@ -455,7 +506,7 @@ export async function updateTransactionRowInPlace(
   if (tabName === PAID_LOG_TAB || tabName === RECEBIMENTOS_TAB) {
     if (!storedRow1) return null;
   }
-  let resultRow = storedRow1 ?? 0;
+  const resultRow = storedRow1 ?? 0;
 
   const costDate = t.noteDate ?? t.dueDate;
   const sheetYear = tabName === PAID_LOG_TAB ? costDate.getUTCFullYear() : t.dueDate.getUTCFullYear();
@@ -502,35 +553,17 @@ export async function updateTransactionRowInPlace(
       requestBody: { values: [buildReceivableRowValues(t)] },
     });
   } else {
+    // Mesmo destino (mesmo dia) mas o valor pode ter mudado — reconstrói o
+    // bloco inteiro ordenado em vez de regravar só esta linha no lugar
+    // antigo, senão a ordem crescente quebraria a cada edição de valor.
     const day = t.dueDate.getUTCDate();
-    const blockStart1 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY + 1;
-    const blockEnd1 = blockStart1 + ROWS_PER_DAY - 1;
-    const { offset, rows } = await readDayBlockLayout({
-      sheets,
-      spreadsheetId,
-      tabName,
-      blockStart1,
-      blockEnd1,
+    await rebuildDayBlock(t.companyId, t.dueDate.getUTCFullYear(), tabName, day);
+    const refreshed = await prisma.transaction.findUnique({
+      where: { id: t.id },
+      select: { sheetCellRef: true },
     });
-    const storedIndex = storedRow1 ? storedRow1 - blockStart1 : -1;
-    const index = rowMatchesTransaction(rows[storedIndex], t.supplier.name, previousAmount)
-      ? storedIndex
-      : rows.findIndex((row) => rowMatchesTransaction(row, t.supplier.name, previousAmount));
-    if (index < 0) return null;
-    const row1 = blockStart1 + index;
-    resultRow = row1;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
-      range: `'${tabName}'!${columnLetter(offset)}${row1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${row1}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [buildDayRowValues(t, false)] },
-    });
-    if (row1 !== storedRow1) {
-      await prisma.transaction.update({
-        where: { id: t.id },
-        data: { sheetCellRef: `${tabName}!A${row1}` },
-      });
-    }
+    const row = Number(refreshed?.sheetCellRef?.match(/\d+/)?.[0]) || resultRow;
+    return { row };
   }
 
   await prisma.transaction.update({ where: { id: t.id }, data: { sheetSyncStatus: "SYNCED" } });
@@ -715,160 +748,22 @@ export async function clearTransactionFromSheet(transactionId: string): Promise<
     return false;
   }
 
+  // Reconstrói o bloco do dia sem este lançamento (ainda existe no banco
+  // neste momento — quem chamou só apaga DEPOIS — daí o exclude) e já
+  // ordenado por valor. Sempre "acha e apaga": não depende de achar a
+  // posição antiga por conteúdo.
   const day = transaction.dueDate.getUTCDate();
-  const blockStart1 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY + 1;
-  const blockEnd1 = blockStart1 + ROWS_PER_DAY - 1;
-
-  const { sheets } = getGoogleClientsForCompany(transaction.company.googleRefreshToken);
-
-  // Valor bruto (não "R$ 7.845,50" como texto, que o Sheets às vezes não
-  // reconhece de volta como número ao regravar) e a coluna "Dia" achada pelo
-  // cabeçalho — o usuário pode ter inserido colunas antes dela (ex: "Semana").
-  const { offset, rows: currentRows } = await readDayBlockLayout({
-    sheets,
-    spreadsheetId,
-    tabName,
-    blockStart1,
-    blockEnd1,
-  });
-  // Só as colunas do app (sempre 9, com "" nas vazias — uma linha mais curta
-  // deixaria sobrando o conteúdo antigo daquela posição depois do deslocamento).
-  const blockRows: (string | number)[][] = [];
-  for (let i = 0; i < ROWS_PER_DAY; i++) {
-    const source = currentRows[i] ?? [];
-    blockRows.push(
-      Array.from({ length: APP_COLUMN_COUNT }, (_, c) => {
-        const value = source[offset + c];
-        return value === undefined || value === null ? "" : (value as string | number);
-      })
-    );
-  }
-
-  // Confere se a linha guardada no banco ainda é MESMO deste lançamento
-  // (fornecedor + valor). Se a planilha mudou por fora, procura no bloco a
-  // linha que bate; se não achar nenhuma, não mexe em nada — apagar pela
-  // posição velha tirava a linha de OUTRO lançamento e deixava esta duplicada.
-  const storedIndex = deletedRow1 - blockStart1;
-  const amountNumber = Number(transaction.amount);
-  let deletedIndex = -1;
-  if (rowMatchesTransaction(currentRows[storedIndex], transaction.supplier.name, amountNumber)) {
-    deletedIndex = storedIndex;
-  } else {
-    deletedIndex = currentRows.findIndex((row) =>
-      rowMatchesTransaction(row, transaction.supplier.name, amountNumber)
-    );
-  }
-  if (deletedIndex < 0) {
-    console.warn(
-      `Lançamento ${transaction.id} (${transaction.supplier.name}) não encontrado no bloco do dia ${day} de ${tabName} — nada foi apagado da planilha.`
-    );
-    return false;
-  }
-  const actualDeletedRow1 = blockStart1 + deletedIndex;
-
-  blockRows.splice(deletedIndex, 1);
-  blockRows.push([day, "", "", "", "", "", "", "", ""]);
-
-  await sheets.spreadsheets.values.update({
-    spreadsheetId,
-    range: `'${tabName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: blockRows },
-  });
-
-  // Os lançamentos que estavam abaixo do excluído, dentro do mesmo bloco (e
-  // mesmo ano), subiram 1 linha — atualiza a referência deles pra não apontar
-  // errado numa exclusão futura.
-  const affected = await prisma.transaction.findMany({
-    where: {
-      companyId: transaction.companyId,
-      id: { not: transaction.id },
-      sheetCellRef: { startsWith: `${tabName}!A` },
-      dueDate: {
-        gte: new Date(Date.UTC(year, 0, 1)),
-        lt: new Date(Date.UTC(year + 1, 0, 1)),
-      },
-    },
-    select: { id: true, sheetCellRef: true },
-  });
-  for (const t of affected) {
-    const r = Number(t.sheetCellRef?.match(/\d+/)?.[0]);
-    if (r > actualDeletedRow1 && r <= blockEnd1) {
-      await prisma.transaction.update({
-        where: { id: t.id },
-        data: { sheetCellRef: `${tabName}!A${r - 1}` },
-      });
-    }
-  }
-
-  // Libera de volta 1 linha no contador do dia (a última ficou em branco).
-  await prisma.sheetRowIndex.updateMany({
-    where: { companyId: transaction.companyId, year, tabName, key: `day-${day}` },
-    data: { rowIndex: { decrement: 1 } },
+  await rebuildDayBlock(transaction.companyId, year, tabName, day, {
+    excludeTransactionId: transaction.id,
   });
   return true;
 }
 
 /**
- * Reserva (e avança) a próxima linha livre dentro do bloco de 30 linhas do dia,
- * de forma transacional para não haver duas gravações competindo pela mesma linha.
- */
-async function reserveNextRowForDay(params: {
-  companyId: string;
-  year: number;
-  tabName: string;
-  day: number;
-}): Promise<number> {
-  const key = `day-${params.day}`;
-  const blockStart0 = HEADER_ROWS + (params.day - 1) * ROWS_PER_DAY;
-  const blockEnd0 = blockStart0 + ROWS_PER_DAY; // exclusivo
-
-  return prisma.$transaction(async (tx) => {
-    const existing = await tx.sheetRowIndex.findUnique({
-      where: {
-        companyId_year_tabName_key: {
-          companyId: params.companyId,
-          year: params.year,
-          tabName: params.tabName,
-          key,
-        },
-      },
-    });
-
-    const nextRow0 = existing ? existing.rowIndex : blockStart0;
-
-    if (nextRow0 >= blockEnd0) {
-      throw new Error(
-        `As 30 linhas reservadas para o dia ${params.day} de ${params.tabName}/${params.year} já estão cheias.`
-      );
-    }
-
-    await tx.sheetRowIndex.upsert({
-      where: {
-        companyId_year_tabName_key: {
-          companyId: params.companyId,
-          year: params.year,
-          tabName: params.tabName,
-          key,
-        },
-      },
-      create: {
-        companyId: params.companyId,
-        year: params.year,
-        tabName: params.tabName,
-        key,
-        rowIndex: nextRow0 + 1,
-      },
-      update: { rowIndex: nextRow0 + 1 },
-    });
-
-    return nextRow0;
-  });
-}
-
-/**
  * Reserva a próxima linha livre dentro do bloco do mês na aba Recebimentos
- * (mesma ideia do reserveNextRowForDay, só que por mês em vez de por dia).
+ * (mesma ideia usada nos blocos de dia antes de virarem `rebuildDayBlock`,
+ * só que por mês em vez de por dia — a Recebimentos não tem ordenação por
+ * valor, então continua com o esquema de reserva incremental).
  */
 async function reserveNextRecebimentoRow(params: {
   companyId: string;
