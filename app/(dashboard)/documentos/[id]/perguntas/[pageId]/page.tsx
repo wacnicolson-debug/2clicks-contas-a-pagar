@@ -74,22 +74,37 @@ export default function AnswerPage() {
   const originalAmount = detail?.installments[0]?.amount ?? 0;
   const splitSumMatches = split ? Math.abs(splitSum - originalAmount) < 0.01 : true;
 
+  // Divide `amount` em N parcelas iguais (a última absorve a diferença de
+  // arredondamento) — mesma conta usada ao iniciar a divisão e ao
+  // adicionar/remover parcela, pra sempre bater com o valor da nota.
+  function evenSplitAmounts(amount: number, count: number): string[] {
+    const each = Math.floor((amount / count) * 100) / 100;
+    const amounts = new Array(count - 1).fill(each);
+    const last = Math.round((amount - each * (count - 1)) * 100) / 100;
+    amounts.push(last);
+    return amounts.map((a) => a.toFixed(2));
+  }
+
   function startSplit() {
     const amount = detail?.installments[0]?.amount ?? 0;
-    const each = Math.floor((amount / 2) * 100) / 100;
-    const last = Math.round((amount - each) * 100) / 100;
-    setSplit([
-      { amount: each.toFixed(2), dueDate: "" },
-      { amount: last.toFixed(2), dueDate: "" },
-    ]);
+    const amounts = evenSplitAmounts(amount, 2);
+    setSplit(amounts.map((amount) => ({ amount, dueDate: "" })));
   }
 
   function addSplitRow() {
-    setSplit((prev) => [...(prev ?? []), { amount: "0.00", dueDate: "" }]);
+    setSplit((prev) => {
+      const rows = [...(prev ?? []), { amount: "0.00", dueDate: "" }];
+      const amounts = evenSplitAmounts(originalAmount, rows.length);
+      return rows.map((row, i) => ({ ...row, amount: amounts[i] }));
+    });
   }
 
   function removeSplitRow(index: number) {
-    setSplit((prev) => (prev ?? []).filter((_, i) => i !== index));
+    setSplit((prev) => {
+      const rows = (prev ?? []).filter((_, i) => i !== index);
+      const amounts = evenSplitAmounts(originalAmount, rows.length);
+      return rows.map((row, i) => ({ ...row, amount: amounts[i] }));
+    });
   }
 
   function updateSplitRow(index: number, patch: Partial<{ amount: string; dueDate: string }>) {
