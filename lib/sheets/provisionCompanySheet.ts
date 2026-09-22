@@ -77,7 +77,6 @@ const HEADER_ROWS = 2; // título + cabeçalho de colunas
 export const RECEBIMENTOS_ROWS_PER_MONTH = 80;
 
 export const COST_TAB = "Classificação de Custos";
-export const BUDGET_TAB = "Orçamento";
 export const RECEBIMENTOS_TAB = "Recebimentos";
 
 // Histórico (oculto) de lançamentos já PAGOS — não entram no fluxo de "Contas
@@ -499,74 +498,6 @@ export function buildCostSummaryStructuralRequests(
   }
 
   return requests;
-}
-
-// Linha (1-based) de uma categoria dentro do bloco de um mês na Classificação
-// de Custos — mesma matemática de `buildCostSummaryValues`, extraída pra ser
-// reutilizada pelas referências de célula da aba de Orçamento (que aponta
-// pra essas mesmas linhas em vez de duplicar a fórmula de soma).
-export function costSummaryCategoryRow1(
-  monthIndex0: number,
-  categoryIndex0: number,
-  categoryCount: number
-): number {
-  const blockSize = categoryCount + 2; // rótulo do mês + categorias + total
-  const headerRow1 = 3 + monthIndex0 * blockSize;
-  return headerRow1 + 1 + categoryIndex0;
-}
-
-// ---------- Aba Orçamento (referenciada de outro arquivo — ver budgetSheet.ts) ----------
-
-export type BudgetCategory = { name: string; budgetSmoothed: boolean };
-
-/**
- * `sourceTab` é o nome da aba (NESTE MESMO arquivo, já que Sheets não deixa
- * referenciar outro arquivo direto numa fórmula normal) que tem os mesmos
- * números da Classificação de Custos — na planilha de Orçamento (arquivo
- * separado), essa aba é "Fonte", espelhada via IMPORTRANGE de tempo em tempo
- * real (ver `provisionBudgetSpreadsheet` em budgetSheet.ts). O layout de
- * linhas por categoria/mês é idêntico ao de `buildCostSummaryValues`, então
- * as referências batem célula a célula.
- */
-export function buildBudgetValues(
-  categories: BudgetCategory[],
-  sourceTab: string
-): sheets_v4.Schema$ValueRange {
-  const rows: (string | number)[][] = [];
-  rows.push(["ORÇAMENTO POR CATEGORIA"]);
-  rows.push(["Categoria de custo", "Valor orçado"]);
-
-  MONTHS.forEach((month, monthIndex0) => {
-    rows.push([month.toUpperCase(), ""]);
-    const catStart1 = rows.length + 1;
-    categories.forEach((category, categoryIndex0) => {
-      const thisMonthCell = `'${sourceTab}'!B${costSummaryCategoryRow1(monthIndex0, categoryIndex0, categories.length)}`;
-      const formula = category.budgetSmoothed
-        ? `=AVERAGE(${Array.from(
-            { length: monthIndex0 + 1 },
-            (_, m) => `'${sourceTab}'!B${costSummaryCategoryRow1(m, categoryIndex0, categories.length)}`
-          ).join(";")})`
-        : `=${thisMonthCell}`;
-      rows.push([category.name, formula]);
-    });
-    const catEnd1 = rows.length;
-    rows.push(["Total do mês", `=SUM(B${catStart1}:B${catEnd1})`]);
-  });
-
-  return { range: `'${BUDGET_TAB}'!A1`, values: rows };
-}
-
-export function buildBudgetStructuralRequests(
-  sheetId: number,
-  categories: BudgetCategory[]
-): sheets_v4.Schema$Request[] {
-  // Mesmo layout (título + cabeçalho + blocos de mês colapsáveis) da
-  // Classificação de Custos — só os nomes das categorias importam aqui, a
-  // fórmula em si não afeta a formatação/agrupamento.
-  return buildCostSummaryStructuralRequests(
-    sheetId,
-    categories.map((c) => c.name)
-  );
 }
 
 // ---------- Formatação comum (título mesclado + cabeçalho em negrito) ----------

@@ -3,7 +3,6 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { rebuildCostSummaryTab } from "@/lib/sheets/rebuildCostSummary";
-import { rebuildBudgetTab } from "@/lib/sheets/budgetSheet";
 import { normalizeText } from "@/lib/utils/normalizeText";
 import type { ExtractedPage } from "@/lib/ai/extractDocument";
 import type { Supplier } from "@prisma/client";
@@ -231,11 +230,6 @@ export async function POST(
         await rebuildCostSummaryTab(session.companyId, year);
       } catch (err) {
         console.error(`Falha ao reconstruir a aba de Classificação de Custos (${year}):`, err);
-      }
-      try {
-        await rebuildBudgetTab(session.companyId, year);
-      } catch (err) {
-        console.error(`Falha ao reconstruir a aba de Orçamento (${year}):`, err);
       }
     }
   }
