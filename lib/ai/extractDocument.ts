@@ -125,36 +125,47 @@ const EXTRACTION_TOOL: Anthropic.Tool = {
   },
 };
 
-const SYSTEM_PROMPT = `Você lê documentos financeiros brasileiros (notas fiscais, boletos, contas de consumo como CEMIG, guias como DARF, recibos) que podem vir digitalizados/fotografados, com qualidade variável.
+function buildSystemPrompt(ownNames: string[]): string {
+  // Uma conta desta pode pagar contas de VÁRIAS empresas do mesmo grupo na
+  // mesma planilha (ex: GLM, Santa Luzia, MAAC, WAAC, MRC) — qualquer uma
+  // delas pode aparecer como emitente/destinatário/pagadora numa nota, então
+  // a regra de "não lance a própria empresa" precisa valer pra todas, não só
+  // pra uma.
+  const namesList = ownNames.map((n) => `"${n}"`).join(", ");
+  const ownNameExample = ownNames[0] ?? "a empresa";
+
+  return `Você lê documentos financeiros brasileiros (notas fiscais, boletos, contas de consumo como CEMIG, guias como DARF, recibos) que podem vir digitalizados/fotografados, com qualidade variável.
 
 Cada página do arquivo é, EM PRINCÍPIO, um documento financeiro diferente. Para cada página, identifique:
 - quem é o fornecedor/emissor (o nome exatamente como aparece, sem tentar "corrigir" ou padronizar)
 
-REGRA MAIS IMPORTANTE DE TODAS — NUNCA extraia "GLM CONFECÇÕES LTDA" (nem variações de grafia/acentuação/maiúscula desse nome) como fornecedor/cliente em "supplierNameRaw". É a própria empresa dona deste sistema — ela pode aparecer no documento em qualquer papel (como contribuinte pagando uma guia, como emitente de uma nota fiscal de venda, como sacado/pagador de um boleto, etc.), mas NUNCA é ela mesma quem deve ser lançada. Sempre que o nome dela aparecer, procure a OUTRA parte do documento — é essa outra parte que é o fornecedor ou cliente de verdade:
-- Guia de recolhimento (DARF, GPS/INSS, GUIA DE FGTS, GRU e similares): a GLM é a contribuinte/pagadora — nesse caso não tem uma "outra empresa" pra extrair, então use o TIPO da guia como fornecedor (ex: "GUIA DE FGTS", "DARF", "GPS/INSS"). Isso também evita que um FGTS e um DARF (impostos diferentes) virem "o mesmo fornecedor" e herdem categoria um do outro.
-- Nota fiscal de VENDA emitida pela própria GLM (GLM aparece como emitente): o fornecedor/cliente é o DESTINATÁRIO da nota (quem comprou), não a GLM.
-- Boleto em que a GLM é a pagadora/sacada: o fornecedor é o BENEFICIÁRIO do boleto (quem recebe), não a GLM.
-- Se depois de procurar não sobrar nenhuma outra parte identificável no documento, só então use algo descritivo do próprio documento (nunca o nome da GLM).
+REGRA MAIS IMPORTANTE DE TODAS — esta conta lança contas de VÁRIAS empresas do mesmo grupo na mesma planilha: ${namesList}. NUNCA extraia nenhum desses nomes (nem variações de grafia/acentuação/maiúscula/razão social) como fornecedor/cliente em "supplierNameRaw" — são as próprias empresas donas deste sistema. Qualquer uma delas pode aparecer no documento em qualquer papel (como contribuinte pagando uma guia, como emitente de uma nota fiscal de venda, como sacado/pagador de um boleto, etc.), mas NUNCA é ela mesma quem deve ser lançada. Sempre que o nome de QUALQUER UMA delas aparecer, procure a OUTRA parte do documento — é essa outra parte que é o fornecedor ou cliente de verdade:
+- Guia de recolhimento (DARF, GPS/INSS, GUIA DE FGTS, GRU e similares): uma dessas empresas é a contribuinte/pagadora — nesse caso não tem uma "outra empresa" pra extrair, então use o TIPO da guia como fornecedor (ex: "GUIA DE FGTS", "DARF", "GPS/INSS"). Isso também evita que um FGTS e um DARF (impostos diferentes) virem "o mesmo fornecedor" e herdem categoria um do outro.
+- Nota fiscal de VENDA emitida por uma dessas empresas (ela aparece como emitente): o fornecedor/cliente é o DESTINATÁRIO da nota (quem comprou), não ela.
+- Boleto em que uma dessas empresas é a pagadora/sacada: o fornecedor é o BENEFICIÁRIO do boleto (quem recebe), não ela.
+- Se depois de procurar não sobrar nenhuma outra parte identificável no documento, só então use algo descritivo do próprio documento (nunca o nome de nenhuma dessas empresas).
 - o CNPJ/CPF, se estiver visível
 - o número da nota fiscal, fatura ou boleto, se estiver visível (exatamente como aparece, ou null se não achar)
 - o(s) valor(es) e a(s) respectiva(s) data(s) de vencimento — um documento pode ter mais de uma parcela/vencimento
 - uma nota de confiança da sua leitura
-- SÓ para nota fiscal (NF-e/DANFE): preencha "documentDirection" com "VENDA" se a GLM aparecer como EMITENTE (campo "Emitente" ou o cabeçalho da nota — ela vendeu), ou "COMPRA" se a GLM aparecer como DESTINATÁRIO/REMETENTE (ela comprou). Deixe null pra qualquer outro tipo de documento (boleto, guia, recibo) — essa distinção emitente/destinatário só vale pra nota fiscal.
+- SÓ para nota fiscal (NF-e/DANFE): preencha "documentDirection" com "VENDA" se UMA DESSAS EMPRESAS aparecer como EMITENTE (campo "Emitente" ou o cabeçalho da nota — ela vendeu), ou "COMPRA" se aparecer como DESTINATÁRIO/REMETENTE (ela comprou). Se nenhuma das empresas da lista aparecer no documento (nem como emitente nem como destinatário), deixe "documentDirection" e "supplierNameRaw" como sua melhor leitura mesmo assim, mas registre em "notes" que o documento não parece ser de nenhuma das empresas de ${ownNameExample} — pode ser um arquivo enviado por engano. Deixe "documentDirection" null pra qualquer outro tipo de documento (boleto, guia, recibo) — essa distinção emitente/destinatário só vale pra nota fiscal.
 
 Não invente dados que não estejam no documento. Se não achar uma data de vencimento, retorne null nesse campo em vez de adivinhar.
 
 MUITO IMPORTANTE — evite lançar a mesma cobrança duas vezes: é comum um arquivo trazer a MESMA nota fiscal/fatura repetida várias vezes (1ª via do cliente, 2ª via da contabilidade, 3ª via de controle) ou dividida em mais de uma página física (ex: "folha 1/2" e "folha 2/2", ou a nota seguida de um anexo/detalhamento de imposto sem cobrança própria). Compare cada página com as anteriores do MESMO arquivo: se o número da nota fiscal/fatura, fornecedor e valores baterem com uma página já vista, preencha "duplicateOfPageNumber" com o número dessa página anterior (a primeira vez que aquela nota apareceu) em vez de repetir o lançamento. Só deixe "duplicateOfPageNumber" nulo quando a página trouxer uma cobrança que ainda não tinha aparecido no arquivo.
 
 MUITO IMPORTANTE — nota que continua em mais de uma página física (não é só isso ser marcado como duplicata): as páginas seguintes de uma mesma nota são ignoradas no lançamento (viram só "duplicateOfPageNumber"), então TODO valor e vencimento daquela nota precisam estar na entrada da PRIMEIRA página onde ela aparece — mesmo que o valor total/a data de vencimento só apareça visualmente numa página seguinte (ex: "folha 2/2" com o total ao final). Antes de finalizar cada nota, releia todas as páginas dela (a primeira e as marcadas como continuação) e junte o valor/vencimento corretos na entrada da primeira página. Nunca deixe "installments" vazio ou com valor errado na primeira página só porque o número estava fisicamente numa página posterior.`;
+}
 
 export async function extractDocumentPages(params: {
   fileBase64: string;
   mimeType: string;
+  ownNames: string[];
 }): Promise<ExtractedPage[]> {
   const message = await client.messages.create({
     model: "claude-sonnet-5",
     max_tokens: 8192,
-    system: SYSTEM_PROMPT,
+    system: buildSystemPrompt(params.ownNames),
     tools: [EXTRACTION_TOOL],
     tool_choice: { type: "tool", name: "record_extracted_pages" },
     messages: [

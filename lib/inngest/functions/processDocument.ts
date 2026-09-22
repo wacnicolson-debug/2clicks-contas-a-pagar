@@ -12,7 +12,10 @@ export const processDocument = inngest.createFunction(
     const { documentId } = event.data;
 
     const document = await step.run("load-document", async () => {
-      return prisma.document.findUniqueOrThrow({ where: { id: documentId } });
+      return prisma.document.findUniqueOrThrow({
+        where: { id: documentId },
+        include: { company: { select: { name: true, ownNames: true } } },
+      });
     });
 
     await step.run("mark-processing", () =>
@@ -29,6 +32,7 @@ export const processDocument = inngest.createFunction(
         return extractDocumentPages({
           fileBase64: fileBuffer.toString("base64"),
           mimeType: document.mimeType,
+          ownNames: document.company.ownNames.length > 0 ? document.company.ownNames : [document.company.name],
         });
       });
     } catch (err) {

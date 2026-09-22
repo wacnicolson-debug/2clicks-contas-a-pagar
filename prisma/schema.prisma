@@ -13,6 +13,12 @@ model Company {
   googleRefreshToken String? // refresh token OAuth do Google da empresa (dono real das planilhas)
   createdAt DateTime @default(now())
 
+  // Nomes que a IA nunca deve extrair como fornecedor/cliente ao ler uma nota
+  // — "é a própria empresa". Uma conta desta pode pagar contas de VÁRIAS
+  // empresas na mesma planilha (ex: grupo com várias razões sociais), daí ser
+  // uma lista e não só `name`. Ver SYSTEM_PROMPT em lib/ai/extractDocument.ts.
+  ownNames String[] @default([])
+
   users        User[]
   suppliers    Supplier[]
   categories   Category[]
@@ -33,6 +39,12 @@ model CompanySheet {
   year          Int
   spreadsheetId String
   createdAt     DateTime @default(now())
+
+  // Planilha de Orçamento — arquivo SEPARADO (não uma aba desta), que clona
+  // a Classificação de Custos em tempo real via IMPORTRANGE. Nasce sozinha
+  // na primeira vez que precisa (ver getOrCreateBudgetSheetForYear), por
+  // isso é opcional mesmo numa CompanySheet já existente.
+  budgetSpreadsheetId String?
 
   @@unique([companyId, year])
 }

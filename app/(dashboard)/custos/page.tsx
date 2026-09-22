@@ -67,12 +67,16 @@ export default async function CustosPage({
       ...(base === "entrada"
         ? // Data de entrada = quando o custo realmente aconteceu: a "Data da
           // nota" (noteDate), quando preenchida (nota antiga lançada com
-          // atraso — ver Transaction.noteDate); senão, quando foi digitada
-          // no sistema (createdAt), que na maioria dos casos é a mesma coisa.
+          // atraso — ver Transaction.noteDate), senão o vencimento — MESMA
+          // regra de "costDate" usada em syncTransaction.ts e na Classificação
+          // de Custos. NUNCA "createdAt" (quando foi digitado no sistema): um
+          // lote de Relação de Pagamentos ou de Extrato processado num dia só,
+          // com contas de meses passados, jogava tudo pro mês em que foi
+          // digitado em vez do mês em que o custo aconteceu de verdade.
           {
             OR: [
               { noteDate: { gte: start, lt: end } },
-              { noteDate: null, createdAt: { gte: start, lt: end } },
+              { noteDate: null, dueDate: { gte: start, lt: end } },
             ],
           }
         : { dueDate: { gte: start, lt: end } }),

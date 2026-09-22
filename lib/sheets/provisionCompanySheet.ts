@@ -103,7 +103,7 @@ export async function provisionCompanySheet(
 ): Promise<{ spreadsheetId: string; sheetIdMap: SheetIdMap }> {
   const { sheets } = getGoogleClientsForCompany(googleRefreshToken);
 
-  const allTabTitles = [...MONTHS, RECEBIMENTOS_TAB, PAID_LOG_TAB, COST_TAB, BUDGET_TAB];
+  const allTabTitles = [...MONTHS, RECEBIMENTOS_TAB, PAID_LOG_TAB, COST_TAB];
 
   const createRes = await sheets.spreadsheets.create({
     requestBody: {
@@ -144,15 +144,6 @@ export async function provisionCompanySheet(
   valueRanges.push(buildCostSummaryValues(DEFAULT_CATEGORIES));
   structuralRequests.push(
     ...buildCostSummaryStructuralRequests(sheetIdMap[COST_TAB], DEFAULT_CATEGORIES)
-  );
-
-  const defaultBudgetCategories = DEFAULT_CATEGORIES.map((name) => ({
-    name,
-    budgetSmoothed: false,
-  }));
-  valueRanges.push(buildBudgetValues(defaultBudgetCategories));
-  structuralRequests.push(
-    ...buildBudgetStructuralRequests(sheetIdMap[BUDGET_TAB], defaultBudgetCategories)
   );
 
   await sheets.spreadsheets.values.batchUpdate({
@@ -514,7 +505,7 @@ export function buildCostSummaryStructuralRequests(
 // de Custos — mesma matemática de `buildCostSummaryValues`, extraída pra ser
 // reutilizada pelas referências de célula da aba de Orçamento (que aponta
 // pra essas mesmas linhas em vez de duplicar a fórmula de soma).
-function costSummaryCategoryRow1(
+export function costSummaryCategoryRow1(
   monthIndex0: number,
   categoryIndex0: number,
   categoryCount: number
@@ -524,11 +515,23 @@ function costSummaryCategoryRow1(
   return headerRow1 + 1 + categoryIndex0;
 }
 
-// ---------- Aba Orçamento (clona a Classificação de Custos por referência) ----------
+// ---------- Aba Orçamento (referenciada de outro arquivo — ver budgetSheet.ts) ----------
 
 export type BudgetCategory = { name: string; budgetSmoothed: boolean };
 
-export function buildBudgetValues(categories: BudgetCategory[]): sheets_v4.Schema$ValueRange {
+/**
+ * `sourceTab` é o nome da aba (NESTE MESMO arquivo, já que Sheets não deixa
+ * referenciar outro arquivo direto numa fórmula normal) que tem os mesmos
+ * números da Classificação de Custos — na planilha de Orçamento (arquivo
+ * separado), essa aba é "Fonte", espelhada via IMPORTRANGE de tempo em tempo
+ * real (ver `provisionBudgetSpreadsheet` em budgetSheet.ts). O layout de
+ * linhas por categoria/mês é idêntico ao de `buildCostSummaryValues`, então
+ * as referências batem célula a célula.
+ */
+export function buildBudgetValues(
+  categories: BudgetCategory[],
+  sourceTab: string
+): sheets_v4.Schema$ValueRange {
   const rows: (string | number)[][] = [];
   rows.push(["ORÇAMENTO POR CATEGORIA"]);
   rows.push(["Categoria de custo", "Valor orçado"]);
@@ -537,11 +540,11 @@ export function buildBudgetValues(categories: BudgetCategory[]): sheets_v4.Schem
     rows.push([month.toUpperCase(), ""]);
     const catStart1 = rows.length + 1;
     categories.forEach((category, categoryIndex0) => {
-      const thisMonthCell = `'${COST_TAB}'!B${costSummaryCategoryRow1(monthIndex0, categoryIndex0, categories.length)}`;
+      const thisMonthCell = `'${sourceTab}'!B${costSummaryCategoryRow1(monthIndex0, categoryIndex0, categories.length)}`;
       const formula = category.budgetSmoothed
         ? `=AVERAGE(${Array.from(
             { length: monthIndex0 + 1 },
-            (_, m) => `'${COST_TAB}'!B${costSummaryCategoryRow1(m, categoryIndex0, categories.length)}`
+            (_, m) => `'${sourceTab}'!B${costSummaryCategoryRow1(m, categoryIndex0, categories.length)}`
           ).join(";")})`
         : `=${thisMonthCell}`;
       rows.push([category.name, formula]);
