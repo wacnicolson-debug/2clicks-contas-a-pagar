@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { isGoogleTokenValid } from "@/lib/sheets/client";
 import { LogoutButton } from "./logout-button";
+import { AutoRefresh } from "./auto-refresh";
 import { DeletePendingButton } from "./delete-pending-button";
 import { RemoveSheetButton } from "./remove-sheet-button";
 
@@ -65,6 +66,7 @@ export default async function DashboardPage({
 
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10">
+      <AutoRefresh />
       <div className="max-w-3xl mx-auto">
         <header className="flex items-center justify-between mb-8">
           <div>
