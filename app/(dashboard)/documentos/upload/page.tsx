@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
@@ -30,6 +30,34 @@ export default function UploadPage() {
     const files = Array.from(fileList ?? []);
     setEntries(files.map((file) => ({ file, status: "pending" })));
   }
+
+  // Cola um print (Ctrl+V) direto da área de transferência, sem precisar
+  // salvar a imagem num arquivo antes — funciona em qualquer lugar da
+  // página, não só com foco num campo.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      if (submitting || !e.clipboardData) return;
+      const imageItems = Array.from(e.clipboardData.items).filter((item) => item.type.startsWith("image/"));
+      if (imageItems.length === 0) return;
+      e.preventDefault();
+
+      const pastedFiles = imageItems
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null)
+        .map((file, i) => {
+          // Print colado vem com nome genérico ("image.png") — dá um nome
+          // com timestamp pra distinguir vários prints na lista.
+          const ext = file.type.split("/")[1] ?? "png";
+          return new File([file], `print-${Date.now()}-${i}.${ext}`, { type: file.type });
+        });
+      if (pastedFiles.length === 0) return;
+
+      setEntries((prev) => [...prev, ...pastedFiles.map((file) => ({ file, status: "pending" as const }))]);
+    }
+
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [submitting]);
 
   function updateEntry(index: number, patch: Partial<FileEntry>) {
     setEntries((prev) => prev.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)));
@@ -98,7 +126,8 @@ export default function UploadPage() {
         <h1 className="text-lg font-semibold mb-1">Adicionar Documentos</h1>
         <p className="text-sm text-neutral-500 mb-6">
           Suba um ou vários PDFs/imagens com notas, boletos ou contas — cada
-          arquivo pode ter várias páginas, uma nota por página.
+          arquivo pode ter várias páginas, uma nota por página. Também pode
+          colar um print (Ctrl+V) direto aqui.
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
