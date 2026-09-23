@@ -39,7 +39,6 @@ export async function PATCH(
 
   const transaction = await prisma.transaction.findFirst({
     where: { id, companyId: session.companyId },
-    include: { document: true },
   });
   if (!transaction) {
     return NextResponse.json({ error: "Lançamento não encontrado." }, { status: 404 });
@@ -83,13 +82,11 @@ export async function PATCH(
   // existe, no mesmo lugar. Só muda de lugar (tira da atual e coloca de novo)
   // se o vencimento ou o "pago" mudarem o destino — ou se o lançamento tem
   // também uma linha extra de custo em outro mês (nota de prazo longo).
-  const fromPaymentList = transaction.document?.kind === "PAYMENT_LIST";
   const newDestination = sheetDestinationKey({
     kind: transaction.kind,
     dueDate,
     noteDate: transaction.noteDate,
     paid,
-    fromPaymentList,
   });
   const sameDestination =
     sheetDestinationKey({
@@ -97,7 +94,6 @@ export async function PATCH(
       dueDate: transaction.dueDate,
       noteDate: transaction.noteDate,
       paid: transaction.paid,
-      fromPaymentList,
     }) === newDestination;
   // Também precisa estar, de fato, na aba certa (ex: "a pagar" que ficou no
   // histórico de pagos) — senão corrigir no lugar manteria o erro.

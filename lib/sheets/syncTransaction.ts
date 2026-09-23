@@ -29,7 +29,7 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
 export async function syncTransactionToSheet(transactionId: string): Promise<void> {
   const transaction = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
-    include: { supplier: true, category: true, company: true, document: true },
+    include: { supplier: true, category: true, company: true },
   });
 
   if (!transaction.company.googleRefreshToken) {
@@ -72,15 +72,8 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
   const startOfToday = new Date();
   startOfToday.setUTCHours(0, 0, 0, 0);
   const alreadyOverdue = dueDate < startOfToday;
-  // Lançamento vindo da "Relação de Pagamentos" (boletos/pix já pagos,
-  // importados em lote pra apurar custo de um período fechado) nunca deve
-  // ocupar linha na aba do mês — essa aba é a lista operacional de quem
-  // ainda vai pagar, e esse pagamento já é passado/fechado. Só entra no
-  // histórico oculto de custos, senão duplica contra o que já foi
-  // controlado manualmente na planilha (ou no fluxo normal) daquele mês.
-  const fromPaymentList = transaction.document?.kind === "PAYMENT_LIST";
 
-  if (transaction.paid && (fromPaymentList || !alreadyOverdue)) {
+  if (transaction.paid && !alreadyOverdue) {
     // Paga ANTES do vencimento (adiantada) não é mais "a pagar" — não ocupa
     // linha no fluxo de pagamentos do mês, só entra no histórico oculto que
     // alimenta a Classificação de Custos (sob o mês de costDate). Já vencida
@@ -183,20 +176,16 @@ export async function rebuildDayBlock(
       dueDate: { gte: startOfDay, lt: startOfNextDay },
       ...(options?.excludeTransactionId ? { id: { not: options.excludeTransactionId } } : {}),
     },
-    include: { supplier: true, category: true, document: true },
+    include: { supplier: true, category: true },
   });
 
   // Mesma regra de roteamento de `syncTransactionToSheet`: pago antes do
-  // vencimento (ou vindo de Relação de Pagamentos) não ocupa linha no bloco
-  // do dia — já está no histórico oculto "Custos Pagos".
+  // vencimento não ocupa linha no bloco do dia — já está no histórico oculto
+  // "Custos Pagos".
   const startOfToday = new Date();
   startOfToday.setUTCHours(0, 0, 0, 0);
   const blockTransactions = candidates
-    .filter((t) => {
-      const alreadyOverdue = t.dueDate < startOfToday;
-      const fromPaymentList = t.document?.kind === "PAYMENT_LIST";
-      return !(t.paid && (fromPaymentList || !alreadyOverdue));
-    })
+    .filter((t) => !(t.paid && t.dueDate >= startOfToday))
     .sort((a, b) => Number(a.amount) - Number(b.amount));
 
   if (blockTransactions.length > ROWS_PER_DAY) {
@@ -320,14 +309,13 @@ export function sheetDestinationKey(t: {
   dueDate: Date;
   noteDate: Date | null;
   paid: boolean;
-  fromPaymentList: boolean;
 }): string {
   const y = t.dueDate.getUTCFullYear();
   const m = t.dueDate.getUTCMonth();
   if (t.kind === "RECEIVABLE") return `recv:${y}-${m}`;
   const startOfToday = new Date();
   startOfToday.setUTCHours(0, 0, 0, 0);
-  if (t.paid && (t.fromPaymentList || t.dueDate >= startOfToday)) {
+  if (t.paid && t.dueDate >= startOfToday) {
     return `log:${(t.noteDate ?? t.dueDate).getUTCFullYear()}`;
   }
   return `day:${y}-${m}-${t.dueDate.getUTCDate()}`;
@@ -348,7 +336,7 @@ export type ResyncResult =
 export async function resyncTransactionToSheet(transactionId: string): Promise<ResyncResult> {
   const t = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
-    include: { supplier: true, company: true, document: true },
+    include: { supplier: true, company: true },
   });
   const token = t.company.googleRefreshToken;
   if (!token) throw new Error("Empresa ainda não conectou o Google Sheets.");
@@ -358,7 +346,6 @@ export async function resyncTransactionToSheet(transactionId: string): Promise<R
     dueDate: t.dueDate,
     noteDate: t.noteDate,
     paid: t.paid,
-    fromPaymentList: t.document?.kind === "PAYMENT_LIST",
   });
   const amount = Number(t.amount);
   const { sheets } = getGoogleClientsForCompany(token);
@@ -477,7 +464,7 @@ export async function updateTransactionRowInPlace(
 ): Promise<{ row: number } | null> {
   const t = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
-    include: { supplier: true, category: true, company: true, document: true },
+    include: { supplier: true, category: true, company: true },
   });
   const token = t.company.googleRefreshToken;
   if (!token) return null;
@@ -494,7 +481,6 @@ export async function updateTransactionRowInPlace(
       dueDate: t.dueDate,
       noteDate: t.noteDate,
       paid: t.paid,
-      fromPaymentList: t.document?.kind === "PAYMENT_LIST",
     }).startsWith("day:")
   ) {
     // Sem posição guardada (ex: uma edição antiga falhou no meio) — procura a
