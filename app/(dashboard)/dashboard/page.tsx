@@ -3,7 +3,7 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { isGoogleTokenValid } from "@/lib/sheets/client";
 import { LogoutButton } from "./logout-button";
-import { AutoRefresh } from "./auto-refresh";
+import { AutoRefresh } from "@/app/_components/AutoRefresh";
 import { DeletePendingButton } from "./delete-pending-button";
 import { RemoveSheetButton } from "./remove-sheet-button";
 

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { DeleteButton } from "./delete-button";
+import { AutoRefresh } from "@/app/_components/AutoRefresh";
 
 const STATUS_LABEL: Record<string, string> = {
   PAGO: "Pago",
@@ -21,6 +22,7 @@ export default async function LancamentosPage() {
 
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10">
+      <AutoRefresh />
       <div className="max-w-6xl mx-auto">
         <header className="mb-6">
           <Link href="/dashboard" className="text-sm text-neutral-500">

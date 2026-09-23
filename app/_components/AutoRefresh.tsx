@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 
 const INTERVAL_MS = 15000;
 
-// Atualiza o painel sozinho (re-busca os dados do servidor, sem recarregar a
-// página) — pra "Esperando sua resposta" e os totais aparecerem sem precisar
+// Atualiza a página sozinha (re-busca os dados do servidor, sem recarregar
+// tudo) — pra lançamentos/respostas pendentes novos aparecerem sem precisar
 // de F5 manual.
 export function AutoRefresh() {
   const router = useRouter();
