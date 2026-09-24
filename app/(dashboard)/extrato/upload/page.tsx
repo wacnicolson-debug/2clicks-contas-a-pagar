@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRef, useState } from "react";
+import Link from "next/link";
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
 
@@ -20,13 +20,13 @@ const STATUS_LABEL: Record<FileStatus, string> = {
 };
 
 export default function StatementUploadPage() {
-  const router = useRouter();
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleFilesSelected(fileList: FileList | null) {
     const files = Array.from(fileList ?? []);
-    setEntries(files.map((file) => ({ file, status: "pending" })));
+    setEntries((prev) => [...prev, ...files.map((file) => ({ file, status: "pending" as const }))]);
   }
 
   function updateEntry(index: number, patch: Partial<FileEntry>) {
@@ -64,6 +64,11 @@ export default function StatementUploadPage() {
       }
     }
 
+    // Tira da lista o que já foi enviado com sucesso — a tela fica pronta
+    // pro próximo arquivo sem precisar de nenhum clique extra. O que deu
+    // erro fica visível (senão a falha/duplicata passava batido).
+    setEntries((prev) => prev.filter((entry) => entry.status === "error"));
+    if (fileInputRef.current) fileInputRef.current.value = "";
     setSubmitting(false);
   }
 
@@ -85,9 +90,6 @@ export default function StatementUploadPage() {
     }
   }
 
-  const allFinished =
-    entries.length > 0 && entries.every((entry) => entry.status === "done" || entry.status === "error");
-
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10">
       <div className="max-w-md mx-auto bg-white border border-neutral-200 rounded-lg p-8">
@@ -102,6 +104,7 @@ export default function StatementUploadPage() {
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <input
+            ref={fileInputRef}
             type="file"
             accept="application/pdf,image/*"
             multiple
@@ -137,26 +140,18 @@ export default function StatementUploadPage() {
             </ul>
           )}
 
-          {allFinished ? (
-            <button
-              type="button"
-              onClick={() => router.push("/dashboard")}
-              className="w-full bg-emerald-700 text-white rounded-md py-2 text-sm font-medium"
-            >
-              Voltar ao painel
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={submitting || entries.length === 0}
-              className="w-full bg-emerald-700 text-white rounded-md py-2 text-sm font-medium disabled:opacity-50"
-            >
-              {submitting
-                ? "Enviando..."
-                : `Enviar${entries.length > 1 ? ` (${entries.length})` : ""}`}
-            </button>
-          )}
+          <button
+            type="submit"
+            disabled={submitting || entries.length === 0}
+            className="w-full bg-emerald-700 text-white rounded-md py-2 text-sm font-medium disabled:opacity-50"
+          >
+            {submitting ? "Enviando..." : `Enviar${entries.length > 1 ? ` (${entries.length})` : ""}`}
+          </button>
         </form>
+
+        <Link href="/dashboard" className="mt-4 block text-center text-sm text-neutral-500 underline">
+          Voltar ao painel
+        </Link>
       </div>
     </div>
   );
