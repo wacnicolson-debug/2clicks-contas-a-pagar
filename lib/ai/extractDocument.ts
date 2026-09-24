@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { buildFileContentBlock } from "./fileContentBlock";
+import { sanitizeIsoDate } from "./sanitizeDate";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -195,17 +196,30 @@ export async function extractDocumentPages(params: {
   // (ou até pra "pages" inteiro) mesmo o schema pedindo o contrário — sem essa
   // validação, 1 página ruim quebrava o processamento do arquivo INTEIRO.
   const pages = result.pages ?? [];
-  return pages.filter((page) => {
-    const validInstallments =
-      Array.isArray(page.installments) &&
-      page.installments.every((i) => Number.isFinite(i.amount) && i.amount > 0);
-    const valid = !!page.supplierNameRaw && validInstallments;
-    if (!valid) {
-      console.error(
-        `Página ${page.pageNumber} veio com dado inválido/ilegível, ignorada:`,
-        JSON.stringify(page)
-      );
-    }
-    return valid;
-  });
+  return pages
+    .map((page) => ({
+      ...page,
+      installments: (page.installments ?? []).map((i) => ({
+        ...i,
+        // A IA às vezes devolve um dueDate com lixo (ex: "2026-09-25}") —
+        // isso passa como "tem data" pra tela de perguntas (o campo não é
+        // vazio) mas dá "Invalid Date" na hora de exibir/gravar, sem nunca
+        // pedir pra corrigir. Trata qualquer data fora do formato esperado
+        // como null, igual a "não achou vencimento" — a tela já sabe pedir.
+        dueDate: sanitizeIsoDate(i.dueDate),
+      })),
+    }))
+    .filter((page) => {
+      const validInstallments =
+        Array.isArray(page.installments) &&
+        page.installments.every((i) => Number.isFinite(i.amount) && i.amount > 0);
+      const valid = !!page.supplierNameRaw && validInstallments;
+      if (!valid) {
+        console.error(
+          `Página ${page.pageNumber} veio com dado inválido/ilegível, ignorada:`,
+          JSON.stringify(page)
+        );
+      }
+      return valid;
+    });
 }

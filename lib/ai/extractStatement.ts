@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { buildFileContentBlock } from "./fileContentBlock";
+import { sanitizeIsoDate } from "./sanitizeDate";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -109,21 +110,23 @@ export async function extractStatementLines(params: {
   // (ou até pra "lines" inteiro) mesmo o schema pedindo o contrário — sem essa
   // validação, 1 linha ruim quebrava o processamento do extrato INTEIRO.
   const rawLines = result.lines ?? [];
-  const validLines = rawLines.filter((line) => {
-    const valid =
-      Number.isFinite(line.amount) &&
-      line.amount > 0 &&
-      !!line.date &&
-      !!line.description &&
-      (line.direction === "SAIDA" || line.direction === "ENTRADA");
-    if (!valid) {
-      console.error(
-        `Linha ${line.lineNumber} do extrato veio com dado inválido/ilegível, ignorada:`,
-        JSON.stringify(line)
-      );
-    }
-    return valid;
-  });
+  const validLines = rawLines
+    .map((line) => ({ ...line, date: sanitizeIsoDate(line.date) as string }))
+    .filter((line) => {
+      const valid =
+        Number.isFinite(line.amount) &&
+        line.amount > 0 &&
+        !!line.date &&
+        !!line.description &&
+        (line.direction === "SAIDA" || line.direction === "ENTRADA");
+      if (!valid) {
+        console.error(
+          `Linha ${line.lineNumber} do extrato veio com dado inválido/ilegível, ignorada:`,
+          JSON.stringify(line)
+        );
+      }
+      return valid;
+    });
 
   // Um extrato de verdade sempre tem pelo menos 1 movimentação — 0 linhas
   // (aqui ou já na resposta bruta da IA) é sinal de algo errado, não um

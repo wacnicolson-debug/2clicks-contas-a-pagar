@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { sanitizeIsoDate } from "@/lib/ai/sanitizeDate";
 
 type Kind = "FORNECEDOR" | "CLIENTE";
 type Status = "PAGO" | "A_PAGAR";
@@ -61,7 +62,7 @@ export default function AnswerPage() {
   // parcelada pode ter mais de uma parcela sem data, e cada uma precisa do
   // seu próprio vencimento (não dá pra aplicar a mesma data pras duas).
   const missingDateIndexes =
-    detail?.installments.flatMap((i, idx) => (i.dueDate ? [] : [idx])) ?? [];
+    detail?.installments.flatMap((i, idx) => (sanitizeIsoDate(i.dueDate) ? [] : [idx])) ?? [];
   const needsDate = missingDateIndexes.length > 0;
   // Categoria é pedida na 1ª nota de qualquer fornecedor, e também de novo
   // em fornecedores marcados como "muda de categoria" (ex: hora extra).
@@ -222,7 +223,7 @@ export default function AnswerPage() {
                 style: "currency",
                 currency: "BRL",
               })}
-              {installment.dueDate
+              {sanitizeIsoDate(installment.dueDate)
                 ? ` — venc. ${new Date(installment.dueDate + "T00:00:00").toLocaleDateString("pt-BR")}`
                 : " — sem data visível"}
             </p>

@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { buildFileContentBlock } from "./fileContentBlock";
+import { sanitizeIsoDate } from "./sanitizeDate";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -172,7 +173,7 @@ export async function extractPaymentListLines(params: {
       const valid =
         Number.isFinite(line.amount) &&
         line.amount > 0 &&
-        !!line.date &&
+        !!sanitizeIsoDate(line.date) &&
         !!(line.finalBeneficiaryNameRaw ?? line.beneficiaryNameRaw);
       if (!valid) {
         console.error(
@@ -184,7 +185,7 @@ export async function extractPaymentListLines(params: {
     })
     .map((line) => ({
       lineNumber: line.lineNumber,
-      date: line.date,
+      date: sanitizeIsoDate(line.date) as string,
       payeeNameRaw: line.finalBeneficiaryNameRaw ?? line.beneficiaryNameRaw,
       taxId: line.finalBeneficiaryTaxId ?? line.beneficiaryTaxId,
       amount: line.amount,
