@@ -200,12 +200,32 @@ export async function rebuildDayBlock(
   const blockEnd1 = blockStart1 + ROWS_PER_DAY - 1;
 
   // A coluna "Dia" pode não ser mais a A (usuário inseriu coluna(s) antes).
-  const { offset } = await readDayBlockLayout({
+  const { offset, rows: oldRows } = await readDayBlockLayout({
     sheets,
     spreadsheetId,
     tabName: monthName,
     blockStart1,
     blockEnd1,
+  });
+
+  // As caixinhas PAGO/CONFERIDO (colunas L/M) são marcação manual, presa à
+  // LINHA — mas essa função reordena o bloco por valor a cada mudança (novo
+  // lançamento, edição, exclusão). Sem isso, a marcação de um lançamento
+  // antigo "vazava" pro lançamento que passasse a ocupar a linha dele depois
+  // do reordenamento. Por isso: acha a linha antiga de cada lançamento (por
+  // fornecedor+valor, mesmo casamento usado pra reenviar/apagar) e leva a
+  // marcação junto pra a posição nova; lançamento sem linha antiga (novo)
+  // nasce desmarcado.
+  const consumedOldRowIndexes = new Set<number>();
+  const checkboxRows: boolean[][] = blockTransactions.map((t) => {
+    const amount = Number(t.amount);
+    const matchIndex = oldRows.findIndex(
+      (row, i) => !consumedOldRowIndexes.has(i) && rowMatchesTransaction(row, t.supplier.name, amount)
+    );
+    if (matchIndex < 0) return [false, false];
+    consumedOldRowIndexes.add(matchIndex);
+    const row = oldRows[matchIndex];
+    return [row[11] === true, row[12] === true];
   });
 
   const blockRows: (string | number)[][] = blockTransactions.map((t) => {
@@ -217,13 +237,21 @@ export async function rebuildDayBlock(
   });
   while (blockRows.length < ROWS_PER_DAY) {
     blockRows.push([day, "", "", "", "", "", "", "", ""]);
+    checkboxRows.push([false, false]);
   }
 
-  await sheets.spreadsheets.values.update({
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
-    range: `'${monthName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: blockRows },
+    requestBody: {
+      valueInputOption: "USER_ENTERED",
+      data: [
+        {
+          range: `'${monthName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
+          values: blockRows,
+        },
+        { range: `'${monthName}'!L${blockStart1}:M${blockEnd1}`, values: checkboxRows },
+      ],
+    },
   });
 
   for (const [index, t] of blockTransactions.entries()) {
