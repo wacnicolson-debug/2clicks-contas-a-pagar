@@ -81,6 +81,41 @@ export function EditTransactionForm({
     router.refresh();
   }
 
+  async function handleRepeat() {
+    const input = prompt(
+      `Repetir "${transaction.supplierName}" (${amount.replace(".", ",")}) por quantos meses, a partir do mês seguinte, mesmo dia (${dueDate.slice(8, 10)})?`,
+      "12"
+    );
+    if (input === null) return;
+    const months = parseInt(input, 10);
+    if (!Number.isFinite(months) || months < 1 || months > 60) {
+      setError("Informe um número de meses entre 1 e 60.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    const res = await fetch(`/api/transactions/${transaction.id}/repeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ months }),
+    });
+    setLoading(false);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.error ?? "Não foi possível repetir. Tente de novo.");
+      return;
+    }
+    const data = await res.json().catch(() => null);
+    const createdCount = data?.createdCount ?? months;
+    const syncedCount = data?.syncedCount ?? createdCount;
+    setResult(
+      syncedCount === createdCount
+        ? `Criados ${createdCount} lançamentos novos (mesmo dia, mesmo valor), já na planilha, um por mês a partir do próximo.`
+        : `Criados ${createdCount} lançamentos novos no sistema, mas só ${syncedCount} chegaram na planilha (${data?.syncError ?? "falha ao sincronizar"}). Os que faltaram aparecem em Lançamentos — use "Reenviar pra planilha" em cada um depois de resolver o problema.`
+    );
+    router.refresh();
+  }
+
   async function handleResync() {
     if (
       !confirm(
@@ -249,6 +284,15 @@ export function EditTransactionForm({
             Cancelar
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={handleRepeat}
+          disabled={loading}
+          className="w-full bg-white border border-neutral-300 text-neutral-700 rounded-md py-2 text-sm font-medium disabled:opacity-50"
+        >
+          Repetir todo mês
+        </button>
 
         <button
           type="button"
