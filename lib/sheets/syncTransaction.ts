@@ -25,8 +25,19 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
  * a planilha nunca é lida de volta pra descobrir posição (ver SheetRowIndex).
  * A planilha certa é escolhida (e criada, se ainda não existir) pelo ANO do
  * vencimento — cada ano tem sua própria planilha.
+ *
+ * TRAVA DE DUPLICATA: é aqui que tudo entra na planilha (notas, perguntas,
+ * relação de pagamentos, extrato, manual, repetir), então é aqui que a trava
+ * fica. Lançamento NOVO (nunca gravado) idêntico a outro já gravado — mesmo
+ * fornecedor, vencimento e valor, vindo de outro arquivo — é a mesma cobrança
+ * chegando de novo: não ganha linha, é descartado e devolve `duplicateOf`.
+ * Gêmeos dentro do mesmo arquivo continuam valendo, e edição/reenvio
+ * (`skipDuplicateGuard`) nunca descarta nada.
  */
-export async function syncTransactionToSheet(transactionId: string): Promise<void> {
+export async function syncTransactionToSheet(
+  transactionId: string,
+  options?: { skipDuplicateGuard?: boolean }
+): Promise<{ duplicateOf: string | null }> {
   const transaction = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
     include: { supplier: true, category: true, company: true },
@@ -38,6 +49,31 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
     );
   }
   const googleRefreshToken = transaction.company.googleRefreshToken;
+
+  if (!options?.skipDuplicateGuard && !transaction.sheetCellRef) {
+    const twin = await prisma.transaction.findFirst({
+      where: {
+        id: { not: transaction.id },
+        companyId: transaction.companyId,
+        kind: transaction.kind,
+        supplierId: transaction.supplierId,
+        dueDate: transaction.dueDate,
+        amount: transaction.amount,
+        sheetCellRef: { not: null },
+        ...(transaction.documentId
+          ? { OR: [{ documentId: null }, { documentId: { not: transaction.documentId } }] }
+          : {}),
+      },
+      select: { id: true },
+    });
+    if (twin) {
+      console.warn(
+        `Lançamento ${transaction.id} descartado: duplicata de ${twin.id} (${transaction.supplier.name}, ${transaction.dueDate.toISOString().slice(0, 10)}, ${transaction.amount}).`
+      );
+      await prisma.transaction.delete({ where: { id: transaction.id } });
+      return { duplicateOf: twin.id };
+    }
+  }
 
   // Recebimento (Cliente/Receita) nunca teve lugar nas abas de mês — aquele
   // layout é todo pensado pra "quem eu tenho que pagar" (blocos de 30 linhas
@@ -57,7 +93,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
       where: { id: transaction.id },
       data: { sheetSyncStatus: "SYNCED", sheetCellRef: cellRef, costLogCellRef: null },
     });
-    return;
+    return { duplicateOf: null };
   }
 
   const dueDate = transaction.dueDate;
@@ -98,7 +134,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
       where: { id: transaction.id },
       data: { sheetSyncStatus: "SYNCED", sheetCellRef: logCellRef, costLogCellRef: null },
     });
-    return;
+    return { duplicateOf: null };
   }
 
   const year = dueDate.getUTCFullYear();
@@ -135,6 +171,7 @@ export async function syncTransactionToSheet(transactionId: string): Promise<voi
       data: { costLogCellRef },
     });
   }
+  return { duplicateOf: null };
 }
 
 /**
@@ -462,7 +499,7 @@ export async function resyncTransactionToSheet(transactionId: string): Promise<R
     }
   }
 
-  await syncTransactionToSheet(t.id);
+  await syncTransactionToSheet(t.id, { skipDuplicateGuard: true });
   return { action: "created" };
 }
 

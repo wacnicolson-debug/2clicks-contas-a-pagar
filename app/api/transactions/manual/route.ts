@@ -87,7 +87,16 @@ export async function POST(request: NextRequest) {
     },
   });
 
-  await syncTransactionToSheet(transaction.id);
+  const { duplicateOf } = await syncTransactionToSheet(transaction.id);
+  if (duplicateOf) {
+    return NextResponse.json(
+      {
+        error:
+          "Já existe um lançamento igual (mesmo fornecedor, vencimento e valor) na planilha — este não foi lançado de novo.",
+      },
+      { status: 409 }
+    );
+  }
 
   return NextResponse.json({ ok: true, transactionId: transaction.id });
 }

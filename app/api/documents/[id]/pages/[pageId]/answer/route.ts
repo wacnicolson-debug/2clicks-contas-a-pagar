@@ -181,6 +181,7 @@ export async function POST(
       const dueDateStr = installment.dueDate ?? body.manualDueDates![index];
       affectedYears.add(new Date(dueDateStr).getUTCFullYear());
       if (noteDate) affectedYears.add(noteDate.getUTCFullYear());
+
       const transaction = await prisma.transaction.create({
         data: {
           companyId: session.companyId,
@@ -207,9 +208,9 @@ export async function POST(
     }
   }
 
-  for (const transactionId of createdIds) {
-    await syncTransactionToSheet(transactionId);
-  }
+  // Duplicata descartada na entrada da planilha vira o lançamento que já
+  // existia (é a esse que a linha de extrato, se houver, fica ligada).
+  createdIds = await syncAll(createdIds);
 
   // Se essa página veio de uma linha de extrato bancário sem nota
   // correspondente, marca a linha como classificada — não-op pra páginas de
@@ -263,6 +264,15 @@ export async function POST(
   }
 
   return NextResponse.json({ ok: true });
+}
+
+async function syncAll(transactionIds: string[]): Promise<string[]> {
+  const finalIds: string[] = [];
+  for (const transactionId of transactionIds) {
+    const { duplicateOf } = await syncTransactionToSheet(transactionId);
+    finalIds.push(duplicateOf ?? transactionId);
+  }
+  return finalIds;
 }
 
 async function resolveOtherPendingPagesForSupplier(
@@ -320,14 +330,12 @@ async function resolveOtherPendingPagesForSupplier(
       }
     }
 
-    for (const transactionId of createdIds) {
-      await syncTransactionToSheet(transactionId);
-    }
+    const syncedIds = await syncAll(createdIds);
 
-    if (createdIds.length > 0) {
+    if (syncedIds.length > 0) {
       await prisma.bankStatementLine.updateMany({
         where: { documentPageId: page.id },
-        data: { status: "CLASSIFIED", matchedTransactionId: createdIds[0] },
+        data: { status: "CLASSIFIED", matchedTransactionId: syncedIds[0] },
       });
     }
 

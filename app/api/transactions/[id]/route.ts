@@ -129,7 +129,7 @@ export async function PATCH(
     action = (await updateTransactionRowInPlace(updated.id, previousAmount)) ? "updated" : "not_found";
   } else if (removedFromOldPlace) {
     // A linha antiga foi achada e tirada — a MESMA linha passa pro novo lugar.
-    await syncTransactionToSheet(updated.id);
+    await syncTransactionToSheet(updated.id, { skipDuplicateGuard: true });
     action = "moved";
   } else {
     action = "not_found";
