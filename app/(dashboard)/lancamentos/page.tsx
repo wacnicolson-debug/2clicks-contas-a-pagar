@@ -3,22 +3,66 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { DeleteButton } from "./delete-button";
 import { AutoRefresh } from "@/app/_components/AutoRefresh";
+import type { Prisma } from "@prisma/client";
 
 const STATUS_LABEL: Record<string, string> = {
   PAGO: "Pago",
   A_PAGAR: "A pagar",
 };
 
-export default async function LancamentosPage() {
+const PAGE_SIZE = 200;
+
+function firstParam(value: string | string[] | undefined): string {
+  return (Array.isArray(value) ? value[0] : value)?.trim() ?? "";
+}
+
+export default async function LancamentosPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
   const session = await getSession();
   if (!session) return null;
 
-  const transactions = await prisma.transaction.findMany({
-    where: { companyId: session.companyId },
-    include: { supplier: true, category: true },
-    orderBy: { createdAt: "desc" },
-    take: 200,
-  });
+  const params = await searchParams;
+  const q = firstParam(params.q);
+  const month = /^\d{4}-\d{2}$/.test(firstParam(params.month)) ? firstParam(params.month) : "";
+  const page = Math.max(1, parseInt(firstParam(params.p), 10) || 1);
+
+  const where: Prisma.TransactionWhereInput = { companyId: session.companyId };
+  if (q) {
+    where.OR = [
+      { supplier: { name: { contains: q, mode: "insensitive" } } },
+      { noteNumber: { contains: q, mode: "insensitive" } },
+    ];
+  }
+  if (month) {
+    const [year, m] = month.split("-").map(Number);
+    where.dueDate = { gte: new Date(Date.UTC(year, m - 1, 1)), lt: new Date(Date.UTC(year, m, 1)) };
+  }
+
+  const [total, transactions] = await Promise.all([
+    prisma.transaction.count({ where }),
+    prisma.transaction.findMany({
+      where,
+      include: { supplier: true, category: true },
+      // Sem filtro de mês: os mais recém-lançados primeiro. Com mês: na ordem
+      // do calendário, que é como se confere um mês.
+      orderBy: month ? [{ dueDate: "asc" }, { createdAt: "asc" }] : { createdAt: "desc" },
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+    }),
+  ]);
+
+  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageHref = (p: number) => {
+    const search = new URLSearchParams();
+    if (q) search.set("q", q);
+    if (month) search.set("month", month);
+    if (p > 1) search.set("p", String(p));
+    const qs = search.toString();
+    return `/lancamentos${qs ? `?${qs}` : ""}`;
+  };
 
   return (
     <div className="min-h-screen bg-neutral-50 px-4 py-10">
@@ -30,13 +74,54 @@ export default async function LancamentosPage() {
           </Link>
           <h1 className="text-lg font-semibold mt-2">Lançamentos</h1>
           <p className="text-sm text-neutral-500">
-            Os 200 mais recentes. Excluir aqui também limpa a linha na planilha.
+            Excluir aqui também limpa a linha na planilha.
           </p>
         </header>
 
+        <form method="get" className="mb-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs text-neutral-500 mb-1" htmlFor="q">
+              Fornecedor ou nº da nota
+            </label>
+            <input
+              id="q"
+              name="q"
+              defaultValue={q}
+              placeholder="ex: tear, 180017"
+              className="border border-neutral-300 rounded-md px-3 py-2 text-sm bg-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-neutral-500 mb-1" htmlFor="month">
+              Mês do vencimento
+            </label>
+            <input
+              id="month"
+              name="month"
+              type="month"
+              defaultValue={month}
+              className="border border-neutral-300 rounded-md px-3 py-2 text-sm bg-white"
+            />
+          </div>
+          <button type="submit" className="bg-emerald-700 text-white rounded-md px-4 py-2 text-sm font-medium">
+            Filtrar
+          </button>
+          {(q || month) && (
+            <Link href="/lancamentos" className="text-sm text-neutral-500 underline py-2">
+              Limpar
+            </Link>
+          )}
+        </form>
+
+        <p className="text-xs text-neutral-500 mb-2">
+          {total === 0
+            ? "Nenhum lançamento encontrado."
+            : `Mostrando ${(page - 1) * PAGE_SIZE + 1}–${(page - 1) * PAGE_SIZE + transactions.length} de ${total}`}
+        </p>
+
         {transactions.length === 0 ? (
           <p className="text-sm text-neutral-500 bg-white border border-neutral-200 rounded-lg p-5">
-            Nenhum lançamento ainda.
+            {q || month ? "Nenhum lançamento com esse filtro." : "Nenhum lançamento ainda."}
           </p>
         ) : (
           <div className="bg-white border border-neutral-200 rounded-lg overflow-x-auto">
@@ -90,6 +175,28 @@ export default async function LancamentosPage() {
               </tbody>
             </table>
           </div>
+        )}
+
+        {lastPage > 1 && (
+          <nav className="mt-4 flex items-center justify-between text-sm">
+            {page > 1 ? (
+              <Link href={pageHref(page - 1)} className="text-emerald-700 underline">
+                ← Anteriores
+              </Link>
+            ) : (
+              <span />
+            )}
+            <span className="text-neutral-500">
+              Página {page} de {lastPage}
+            </span>
+            {page < lastPage ? (
+              <Link href={pageHref(page + 1)} className="text-emerald-700 underline">
+                Próximos →
+              </Link>
+            ) : (
+              <span />
+            )}
+          </nav>
         )}
       </div>
     </div>
