@@ -210,7 +210,8 @@ export async function POST(
 
   // Duplicata descartada na entrada da planilha vira o lançamento que já
   // existia (é a esse que a linha de extrato, se houver, fica ligada).
-  createdIds = await syncAll(createdIds);
+  const synced = await syncAll(createdIds);
+  createdIds = synced.ids;
 
   // Se essa página veio de uma linha de extrato bancário sem nota
   // correspondente, marca a linha como classificada — não-op pra páginas de
@@ -263,16 +264,18 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, duplicatesSkipped: synced.skipped });
 }
 
-async function syncAll(transactionIds: string[]): Promise<string[]> {
-  const finalIds: string[] = [];
+async function syncAll(transactionIds: string[]): Promise<{ ids: string[]; skipped: number }> {
+  const ids: string[] = [];
+  let skipped = 0;
   for (const transactionId of transactionIds) {
     const { duplicateOf } = await syncTransactionToSheet(transactionId);
-    finalIds.push(duplicateOf ?? transactionId);
+    if (duplicateOf) skipped++;
+    ids.push(duplicateOf ?? transactionId);
   }
-  return finalIds;
+  return { ids, skipped };
 }
 
 async function resolveOtherPendingPagesForSupplier(
@@ -330,7 +333,7 @@ async function resolveOtherPendingPagesForSupplier(
       }
     }
 
-    const syncedIds = await syncAll(createdIds);
+    const syncedIds = (await syncAll(createdIds)).ids;
 
     if (syncedIds.length > 0) {
       await prisma.bankStatementLine.updateMany({

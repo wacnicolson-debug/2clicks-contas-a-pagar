@@ -175,6 +175,13 @@ export default function AnswerPage() {
       return;
     }
 
+    const data = await res.json().catch(() => null);
+    if (data?.duplicatesSkipped > 0) {
+      alert(
+        `${data.duplicatesSkipped} parcela(s) desta nota já estavam lançadas (mesmo fornecedor, vencimento e valor) e não foram lançadas de novo.`
+      );
+    }
+
     router.push(`/documentos/${params.id}`);
   }
 
