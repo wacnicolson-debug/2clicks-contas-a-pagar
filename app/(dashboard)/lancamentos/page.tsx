@@ -12,6 +12,21 @@ const STATUS_LABEL: Record<string, string> = {
 
 const PAGE_SIZE = 500;
 
+const SORT_OPTIONS = {
+  venc_asc: "Vencimento (mais próximo)",
+  venc_desc: "Vencimento (mais distante)",
+  valor_desc: "Valor (maior)",
+  valor_asc: "Valor (menor)",
+} as const;
+type SortKey = keyof typeof SORT_OPTIONS;
+
+const SORT_ORDER: Record<SortKey, Prisma.TransactionOrderByWithRelationInput[]> = {
+  venc_asc: [{ dueDate: "asc" }, { createdAt: "asc" }],
+  venc_desc: [{ dueDate: "desc" }, { createdAt: "desc" }],
+  valor_desc: [{ amount: "desc" }, { dueDate: "asc" }],
+  valor_asc: [{ amount: "asc" }, { dueDate: "asc" }],
+};
+
 function firstParam(value: string | string[] | undefined): string {
   return (Array.isArray(value) ? value[0] : value)?.trim() ?? "";
 }
@@ -27,6 +42,8 @@ export default async function LancamentosPage({
   const params = await searchParams;
   const q = firstParam(params.q);
   const month = /^\d{4}-\d{2}$/.test(firstParam(params.month)) ? firstParam(params.month) : "";
+  const sortParam = firstParam(params.sort);
+  const sort: SortKey | "" = Object.hasOwn(SORT_OPTIONS, sortParam) ? (sortParam as SortKey) : "";
   const page = Math.max(1, parseInt(firstParam(params.p), 10) || 1);
 
   const where: Prisma.TransactionWhereInput = { companyId: session.companyId };
@@ -46,9 +63,14 @@ export default async function LancamentosPage({
     prisma.transaction.findMany({
       where,
       include: { supplier: true, category: true },
-      // Sem filtro de mês: os mais recém-lançados primeiro. Com mês: na ordem
-      // do calendário, que é como se confere um mês.
-      orderBy: month ? [{ dueDate: "asc" }, { createdAt: "asc" }] : { createdAt: "desc" },
+      // Ordem escolhida tem prioridade. Sem escolha e sem mês: os mais
+      // recém-lançados primeiro. Com mês: na ordem do calendário, que é como se
+      // confere um mês.
+      orderBy: sort
+        ? SORT_ORDER[sort]
+        : month
+          ? [{ dueDate: "asc" }, { createdAt: "asc" }]
+          : { createdAt: "desc" },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
     }),
@@ -59,6 +81,7 @@ export default async function LancamentosPage({
     const search = new URLSearchParams();
     if (q) search.set("q", q);
     if (month) search.set("month", month);
+    if (sort) search.set("sort", sort);
     if (p > 1) search.set("p", String(p));
     const qs = search.toString();
     return `/lancamentos${qs ? `?${qs}` : ""}`;
@@ -103,10 +126,28 @@ export default async function LancamentosPage({
               className="border border-neutral-300 rounded-md px-3 py-2 text-sm bg-white"
             />
           </div>
+          <div>
+            <label className="block text-xs text-neutral-500 mb-1" htmlFor="sort">
+              Ordenar por
+            </label>
+            <select
+              id="sort"
+              name="sort"
+              defaultValue={sort}
+              className="border border-neutral-300 rounded-md px-3 py-2 text-sm bg-white"
+            >
+              <option value="">{month ? "Vencimento (padrão do mês)" : "Mais recentes lançados"}</option>
+              {Object.entries(SORT_OPTIONS).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
           <button type="submit" className="bg-emerald-700 text-white rounded-md px-4 py-2 text-sm font-medium">
             Filtrar
           </button>
-          {(q || month) && (
+          {(q || month || sort) && (
             <Link href="/lancamentos" className="text-sm text-neutral-500 underline py-2">
               Limpar
             </Link>
