@@ -5,6 +5,7 @@ import { downloadDocumentFile } from "@/lib/storage/supabase";
 import { extractDocumentPages } from "@/lib/ai/extractDocument";
 import { resolveSupplier, needsOnboardingQuestions } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
+import { compareWithExistingLaunches } from "@/lib/documents/existingLaunches";
 
 export const processDocument = inngest.createFunction(
   { id: "process-document", retries: 3, triggers: [{ event: "document/uploaded" }] },
@@ -100,12 +101,42 @@ export const processDocument = inngest.createFunction(
         // pra lançar automático sem data (regra: só pergunta quando falta mesmo),
         // então essa página também para na tela de perguntas — só que lá ela vai
         // pedir apenas a data, sem repetir as 3 perguntas de classificação.
+        const existing = await compareWithExistingLaunches({
+          companyId: document.companyId,
+          supplierId: supplier.id,
+          noteNumber: page.noteNumber,
+          installments: page.installments,
+        });
+
+        if (existing.allLaunched) {
+          // Mesma nota reenviada (todas as parcelas já lançadas, pelo
+          // fornecedor ou pelo número da nota) — só registra, sem lançar nem
+          // perguntar. Antes isso virava pendência quando a IA errava o
+          // fornecedor, e o usuário tinha que descobrir que era repetida.
+          await prisma.documentPage.create({
+            data: {
+              documentId: document.id,
+              pageNumber: page.pageNumber,
+              rawExtraction: { ...page, alreadyLaunched: true } as unknown as object,
+              supplierId: supplier.id,
+              confidence: page.confidence,
+              status: "DONE",
+            },
+          });
+          return { needsInput: false, transactionIds: [] as string[] };
+        }
+
+        // Data suspeita (regras de brDate.ts) ou nota já lançada com outra
+        // data: para e pede conferência em vez de lançar calado.
+        const reviewReasons = [...(page.reviewReasons ?? []), ...existing.conflicts];
+
         const missingDate = page.installments.some((i) => !i.dueDate);
         const needsInput =
           needsOnboardingQuestions(supplier) ||
           missingDate ||
           supplier.alwaysAskCategory ||
-          directionConflict;
+          directionConflict ||
+          reviewReasons.length > 0;
 
         const docPage = await prisma.documentPage.create({
           data: {
@@ -115,6 +146,7 @@ export const processDocument = inngest.createFunction(
               ...page,
               knownKind: documentKind ?? page.knownKind ?? null,
               directionConflict,
+              reviewReasons,
             } as unknown as object,
             supplierId: supplier.id,
             confidence: page.confidence,

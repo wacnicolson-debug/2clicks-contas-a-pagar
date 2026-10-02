@@ -22,6 +22,10 @@ type PageDetail = {
   knownPixKey: string | null;
   knownKind: Kind | null;
   installments: { amount: number; dueDate: string | null }[];
+  // Leitura suspeita (data fora de ordem, nota já lançada com outra data...)
+  // — mostra o motivo e deixa corrigir valores e datas antes de lançar.
+  reviewReasons: string[];
+  issueDate: string | null;
 };
 
 export default function AnswerPage() {
@@ -52,6 +56,14 @@ export default function AnswerPage() {
         if (data.knownPaymentMethod) setMethod(data.knownPaymentMethod);
         if (data.knownPixKey) setPixKey(data.knownPixKey);
         if (data.knownKind) setKind(data.knownKind);
+        if (data.reviewReasons.length > 0) {
+          setSplit(
+            data.installments.map((i) => ({
+              amount: i.amount.toFixed(2),
+              dueDate: sanitizeIsoDate(i.dueDate) ?? data.issueDate ?? "",
+            }))
+          );
+        }
       });
     fetch(`/api/categories`)
       .then((res) => res.json())
@@ -70,10 +82,13 @@ export default function AnswerPage() {
 
   // Divisão manual só faz sentido quando a IA leu 1 valor cheio (nada pra
   // dividir se ela já separou as parcelas certinho).
-  const canSplit = (detail?.installments.length ?? 0) === 1;
+  const reviewing = (detail?.reviewReasons.length ?? 0) > 0;
+  const canSplit = !reviewing && (detail?.installments.length ?? 0) === 1;
   const splitSum = split?.reduce((sum, s) => sum + (parseFloat(s.amount) || 0), 0) ?? 0;
   const originalAmount = detail?.installments[0]?.amount ?? 0;
-  const splitSumMatches = split ? Math.abs(splitSum - originalAmount) < 0.01 : true;
+  // Na conferência os valores lidos podem estar errados, então não há um
+  // total confiável pra comparar — vale o que o usuário digitar.
+  const splitSumMatches = split && !reviewing ? Math.abs(splitSum - originalAmount) < 0.01 : true;
 
   // Divide `amount` em N parcelas iguais (a última absorve a diferença de
   // arredondamento) — mesma conta usada ao iniciar a divisão e ao
@@ -93,6 +108,10 @@ export default function AnswerPage() {
   }
 
   function addSplitRow() {
+    if (reviewing) {
+      setSplit((prev) => [...(prev ?? []), { amount: "", dueDate: "" }]);
+      return;
+    }
     setSplit((prev) => {
       const rows = [...(prev ?? []), { amount: "0.00", dueDate: "" }];
       const amounts = evenSplitAmounts(originalAmount, rows.length);
@@ -101,6 +120,10 @@ export default function AnswerPage() {
   }
 
   function removeSplitRow(index: number) {
+    if (reviewing) {
+      setSplit((prev) => (prev ?? []).filter((_, i) => i !== index));
+      return;
+    }
     setSplit((prev) => {
       const rows = (prev ?? []).filter((_, i) => i !== index);
       const amounts = evenSplitAmounts(originalAmount, rows.length);
@@ -201,7 +224,9 @@ export default function AnswerPage() {
       >
         <div>
           <h1 className="text-lg font-semibold mb-1">
-            {!detail.supplierKnown
+            {reviewing
+              ? `${detail.supplierName} — confira valores e datas`
+              : !detail.supplierKnown
               ? detail.fromStatement
                 ? `Primeiro registro de ${detail.supplierName}`
                 : `Primeira nota de ${detail.supplierName}`
@@ -219,6 +244,20 @@ export default function AnswerPage() {
                 : "Já sabemos como lançar esse fornecedor — a nota só não trouxe vencimento visível."}
           </p>
         </div>
+
+        {reviewing && (
+          <div className="bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-sm space-y-1">
+            <p className="text-xs font-medium text-amber-800">
+              Não lançamos automático porque algo não bateu:
+            </p>
+            {detail.reviewReasons.map((reason, i) => (
+              <p key={i} className="text-amber-900">
+                {reason}
+              </p>
+            ))}
+            <p className="text-xs text-amber-800">Corrija abaixo, olhando a nota, e confirme.</p>
+          </div>
+        )}
 
         <div className="bg-neutral-50 border border-neutral-200 rounded-md px-3 py-2 text-sm">
           <p className="text-xs font-medium text-neutral-500 mb-1">
@@ -253,7 +292,9 @@ export default function AnswerPage() {
 
         {split && (
           <div className="space-y-2">
-            <p className="text-xs font-medium text-neutral-500">Parcelas</p>
+            <p className="text-xs font-medium text-neutral-500">
+              {reviewing ? "Parcelas que serão lançadas (valor e vencimento)" : "Parcelas"}
+            </p>
             {split.map((row, i) => (
               <div key={i} className="flex gap-2 items-start">
                 <div className="flex-1">
@@ -275,7 +316,7 @@ export default function AnswerPage() {
                     required
                   />
                 </div>
-                {split.length > 2 && (
+                {split.length > (reviewing ? 1 : 2) && (
                   <button
                     type="button"
                     onClick={() => removeSplitRow(i)}
@@ -294,18 +335,22 @@ export default function AnswerPage() {
               >
                 + adicionar parcela
               </button>
-              <button
-                type="button"
-                onClick={() => setSplit(null)}
-                className="text-xs text-neutral-400 underline"
-              >
-                cancelar divisão
-              </button>
+              {!reviewing && (
+                <button
+                  type="button"
+                  onClick={() => setSplit(null)}
+                  className="text-xs text-neutral-400 underline"
+                >
+                  cancelar divisão
+                </button>
+              )}
             </div>
-            <p className={`text-xs ${splitSumMatches ? "text-neutral-400" : "text-red-600"}`}>
-              Soma: {splitSum.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}{" "}
-              (nota: {originalAmount.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })})
-            </p>
+            {!reviewing && (
+              <p className={`text-xs ${splitSumMatches ? "text-neutral-400" : "text-red-600"}`}>
+                Soma: {splitSum.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}{" "}
+                (nota: {originalAmount.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })})
+              </p>
+            )}
           </div>
         )}
 
@@ -445,6 +490,7 @@ export default function AnswerPage() {
               {missingDateIndexes.length > 1
                 ? "Essa nota não trouxe vencimento visível nessas parcelas — informe a data de cada uma."
                 : "Essa nota não trouxe uma data de vencimento visível — informe manualmente."}
+              {detail.issueDate && " Já preenchemos com a data de emissão; troque se o vencimento for outro."}
             </p>
             <div className="space-y-2">
               {missingDateIndexes.map((idx) => (
@@ -461,7 +507,7 @@ export default function AnswerPage() {
                     id={`dueDate-${idx}`}
                     name={`dueDate-${idx}`}
                     type="date"
-                    defaultValue=""
+                    defaultValue={detail.issueDate ?? ""}
                     className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
                     required
                   />

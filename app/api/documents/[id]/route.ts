@@ -49,6 +49,7 @@ export async function GET(
         status: p.status,
         supplierName: p.supplier?.name ?? null,
         duplicateOfPageNumber: extraction?.duplicateOfPageNumber ?? null,
+        alreadyLaunched: !!extraction?.alreadyLaunched,
       };
     }),
     matchedLines: matchedLines.map((l) => ({

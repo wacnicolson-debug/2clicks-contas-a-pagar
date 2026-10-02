@@ -48,6 +48,12 @@ export async function GET(
     knownPaymentMethod: extraction.knownPaymentMethod ?? null,
     knownPixKey: extraction.knownPixKey ?? null,
     knownKind: extraction.knownKind ?? null,
+    // Leitura com data suspeita ou que bate diferente de um lançamento já
+    // existente — a tela mostra o motivo e deixa corrigir valores e datas.
+    reviewReasons: extraction.reviewReasons ?? [],
+    // Sugestão pra parcela sem vencimento visível (cupom de posto, recibo):
+    // a data de emissão, que o usuário só confirma ou troca.
+    issueDate: extraction.issueDate ?? null,
     installments: extraction.installments.map((i) => ({
       amount: i.amount,
       dueDate: i.dueDate,

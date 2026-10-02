@@ -294,6 +294,8 @@ async function resolveOtherPendingPagesForSupplier(
     const extraction = page.rawExtraction as unknown as ExtractedPage;
     const missingDate = extraction.installments.some((i) => !i.dueDate);
     if (missingDate) continue; // só o usuário sabe essa data, continua pendente
+    // Leitura suspeita (data/nota a conferir) nunca é resolvida sozinha.
+    if ((extraction.reviewReasons ?? []).length > 0) continue;
 
     // Extrato/relação de pagamentos: já foi pago. Nota: só o que foi respondido agora.
     const pageStatus: "PAGO" | "A_PAGAR" =

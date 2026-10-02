@@ -16,6 +16,7 @@ type DocumentStatusResponse = {
     status: PageStatus;
     supplierName: string | null;
     duplicateOfPageNumber: number | null;
+    alreadyLaunched: boolean;
   }[];
   matchedLines: { id: string; description: string; amount: number; date: string }[];
 };
@@ -84,6 +85,8 @@ export default function DocumentStatusPage() {
                 >
                   Responder
                 </Link>
+              ) : page.alreadyLaunched ? (
+                <span className="text-neutral-400">Já estava lançada antes</span>
               ) : page.duplicateOfPageNumber ? (
                 <span className="text-neutral-400">
                   Já contabilizada (pág. {page.duplicateOfPageNumber})

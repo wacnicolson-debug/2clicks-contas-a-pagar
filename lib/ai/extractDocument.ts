@@ -1,12 +1,17 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { buildFileContentBlock } from "./fileContentBlock";
-import { sanitizeIsoDate } from "./sanitizeDate";
+import { parseBrDate, installmentDateProblems } from "./brDate";
+import { isValidTaxId } from "@/lib/utils/taxId";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 export type ExtractedInstallment = {
   amount: number;
   dueDate: string | null; // ISO yyyy-mm-dd, null se não tiver data visível no documento
+  // Como estava impresso no documento (só nas notas lidas pela IA) — a
+  // conversão pra dueDate é feita em código, ver brDate.ts.
+  dueDateText?: string | null;
+  parcelNumber?: string | null;
 };
 
 export type ExtractedPage = {
@@ -43,86 +48,114 @@ export type ExtractedPage = {
   // bateu diferente do perfil já salvo do fornecedor — sinaliza que essa
   // pergunta é um "confirma de novo" e não deve sobrescrever o perfil.
   directionConflict?: boolean;
+  // Data de emissão da nota (ISO), quando visível — usada só pra conferir
+  // que nenhum vencimento cai antes dela.
+  issueDate?: string | null;
+  // Motivos pra não lançar automático e pedir conferência (data suspeita,
+  // nota já lançada com outra data...). Vazio/ausente = leitura sem suspeita.
+  reviewReasons?: string[];
+  // Todas as parcelas desta página já estavam lançadas (mesma nota reenviada)
+  // — registrada sem lançar nem perguntar nada.
+  alreadyLaunched?: boolean;
 };
 
-const EXTRACTION_TOOL: Anthropic.Tool = {
-  name: "record_extracted_pages",
-  description:
-    "Registra os dados extraídos de cada página do documento (cada página é uma nota/boleto diferente).",
-  input_schema: {
-    type: "object",
-    properties: {
-      pages: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            pageNumber: { type: "integer", description: "Número da página no PDF, começando em 1" },
-            supplierNameRaw: {
-              type: "string",
-              description:
-                "Nome do fornecedor/emissor exatamente como aparece no documento — só o nome/razão social em si, nunca um número (nota fiscal, CNPJ, código de barras, linha digitável) que esteja perto dele no layout. REGRA: esse campo é sempre texto, nunca tem dígito nenhum — se o que você leu tem qualquer número junto (no início, no meio ou no fim), é sinal de que pegou um número vizinho por engano; releia e devolva só as letras do nome de verdade.",
-            },
-            taxId: {
-              type: ["string", "null"],
-              description: "CNPJ ou CPF do fornecedor/emissor, se estiver visível no documento",
-            },
-            noteNumber: {
-              type: ["string", "null"],
-              description:
-                "Número da nota fiscal, fatura ou boleto, exatamente como aparece no documento, ou null se não houver número visível",
-            },
-            installments: {
-              type: "array",
-              description:
-                "Uma entrada por vencimento/parcela encontrado no documento. A maioria dos documentos tem só uma.",
-              items: {
-                type: "object",
-                properties: {
-                  amount: { type: "number", description: "Valor da parcela, em reais" },
-                  dueDate: {
-                    type: ["string", "null"],
-                    description: "Data de vencimento no formato AAAA-MM-DD, ou null se não houver data visível",
-                  },
+type RawExtractedPage = Omit<ExtractedPage, "installments" | "issueDate"> & {
+  issueDateText: string | null;
+  installments: { parcelNumber: string | null; dueDateText: string | null; amount: number }[] | null;
+};
+
+// Formato de saída garantido pela API (structured outputs) — o modelo atual
+// não aceita forçar a chamada de uma ferramenta, e isso aqui garante o JSON
+// no formato certo do mesmo jeito.
+const OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["pages"],
+  properties: {
+    pages: {
+      type: "array",
+      description: "Uma entrada por página do documento (cada página é, em princípio, uma nota/boleto diferente).",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "pageNumber",
+          "supplierNameRaw",
+          "taxId",
+          "noteNumber",
+          "issueDateText",
+          "installments",
+          "confidence",
+          "notes",
+          "duplicateOfPageNumber",
+          "documentDirection",
+        ],
+        properties: {
+          pageNumber: { type: "integer", description: "Número da página no PDF, começando em 1" },
+          supplierNameRaw: {
+            type: "string",
+            description:
+              "Nome do fornecedor/emissor exatamente como aparece no documento — só o nome/razão social em si, nunca um número (nota fiscal, CNPJ, código de barras, linha digitável) que esteja perto dele no layout. REGRA: esse campo é sempre texto, nunca tem dígito nenhum — se o que você leu tem qualquer número junto (no início, no meio ou no fim), é sinal de que pegou um número vizinho por engano; releia e devolva só as letras do nome de verdade.",
+          },
+          taxId: {
+            type: ["string", "null"],
+            description:
+              "CNPJ ou CPF da MESMA parte cujo nome foi para supplierNameRaw, se estiver visível. Nunca o CNPJ de uma das empresas donas do sistema (ex: o da GLM como destinatária de uma nota de compra) — numa DANFE de compra, é o CNPJ do bloco do EMITENTE. Se não achar o CNPJ dessa parte, null.",
+          },
+          noteNumber: {
+            type: ["string", "null"],
+            description:
+              "Número da nota fiscal, fatura ou boleto, exatamente como aparece no documento, ou null se não houver número visível",
+          },
+          issueDateText: {
+            type: ["string", "null"],
+            description:
+              "Data de emissão do documento EXATAMENTE como está impressa (ex: \"25/09/2026\"), sem converter. null se não houver.",
+          },
+          installments: {
+            type: "array",
+            description:
+              "Uma entrada por vencimento/parcela encontrado no documento, na ordem em que aparecem. A maioria dos documentos tem só uma.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["parcelNumber", "dueDateText", "amount"],
+              properties: {
+                parcelNumber: {
+                  type: ["string", "null"],
+                  description:
+                    "Número/identificação da parcela ou duplicata EXATAMENTE como impresso (ex: \"001\", \"1/7\", \"0180491-2\"). null se o documento não numera as parcelas.",
                 },
-                required: ["amount", "dueDate"],
+                dueDateText: {
+                  type: ["string", "null"],
+                  description:
+                    "Data de vencimento desta parcela EXATAMENTE como está impressa no documento (ex: \"09/10/2026\"), caractere por caractere — NÃO converta pra outro formato e NÃO reordene dia e mês; o sistema converte. null se não houver data visível.",
+                },
+                amount: { type: "number", description: "Valor desta parcela, em reais" },
               },
             },
-            confidence: {
-              type: "number",
-              description: "Confiança da leitura, de 0 a 1",
-            },
-            notes: {
-              type: ["string", "null"],
-              description: "Qualquer observação relevante (ex: documento ilegível, tipo de documento identificado)",
-            },
-            duplicateOfPageNumber: {
-              type: ["integer", "null"],
-              description:
-                "Preencha com o número de uma página ANTERIOR se esta página for a mesma nota fiscal/fatura repetida — 2ª via, 3ª via, folha de continuação (ex: 'folha 2/2'), ou um anexo sem valor de cobrança próprio (ex: detalhamento de imposto/discriminação de serviço da mesma nota). Deixe null se esta página é uma nota/cobrança que ainda não apareceu antes no arquivo.",
-            },
-            documentDirection: {
-              type: ["string", "null"],
-              enum: ["COMPRA", "VENDA", null],
-              description:
-                "SÓ para nota fiscal (NF-e/DANFE): 'VENDA' se a GLM aparecer como EMITENTE (ela vendeu), 'COMPRA' se a GLM aparecer como DESTINATÁRIA (ela comprou). null pra qualquer outro tipo de documento (boleto, guia, recibo) onde essa distinção emitente/destinatário não se aplica do mesmo jeito.",
-            },
           },
-          required: [
-            "pageNumber",
-            "supplierNameRaw",
-            "taxId",
-            "noteNumber",
-            "installments",
-            "confidence",
-            "notes",
-            "duplicateOfPageNumber",
-            "documentDirection",
-          ],
+          confidence: {
+            type: "number",
+            description: "Confiança da leitura, de 0 a 1",
+          },
+          notes: {
+            type: ["string", "null"],
+            description: "Qualquer observação relevante (ex: documento ilegível, tipo de documento identificado)",
+          },
+          duplicateOfPageNumber: {
+            type: ["integer", "null"],
+            description:
+              "Preencha com o número de uma página ANTERIOR se esta página for a mesma nota fiscal/fatura repetida — 2ª via, 3ª via, folha de continuação (ex: 'folha 2/2'), ou um anexo sem valor de cobrança próprio (ex: detalhamento de imposto/discriminação de serviço da mesma nota). Deixe null se esta página é uma nota/cobrança que ainda não apareceu antes no arquivo.",
+          },
+          documentDirection: {
+            anyOf: [{ type: "string", enum: ["COMPRA", "VENDA"] }, { type: "null" }],
+            description:
+              "SÓ para nota fiscal (NF-e/DANFE): 'VENDA' se a GLM aparecer como EMITENTE (ela vendeu), 'COMPRA' se a GLM aparecer como DESTINATÁRIA (ela comprou). null pra qualquer outro tipo de documento (boleto, guia, recibo) onde essa distinção emitente/destinatário não se aplica do mesmo jeito.",
+          },
         },
       },
     },
-    required: ["pages"],
   },
 };
 
@@ -145,9 +178,10 @@ REGRA MAIS IMPORTANTE DE TODAS — esta conta lança contas de VÁRIAS empresas 
 - Nota fiscal de VENDA emitida por uma dessas empresas (ela aparece como emitente): o fornecedor/cliente é o DESTINATÁRIO da nota (quem comprou), não ela.
 - Boleto em que uma dessas empresas é a pagadora/sacada: o fornecedor é o BENEFICIÁRIO do boleto (quem recebe), não ela.
 - Se depois de procurar não sobrar nenhuma outra parte identificável no documento, só então use algo descritivo do próprio documento (nunca o nome de nenhuma dessas empresas).
-- o CNPJ/CPF, se estiver visível
+- o CNPJ/CPF dessa MESMA parte (o fornecedor/cliente que você extraiu), se estiver visível — nunca o CNPJ de nenhuma das empresas acima, mesmo que ele apareça maior ou primeiro no documento
 - o número da nota fiscal, fatura ou boleto, se estiver visível (exatamente como aparece, ou null se não achar)
-- o(s) valor(es) e a(s) respectiva(s) data(s) de vencimento — um documento pode ter mais de uma parcela/vencimento. As datas nos documentos brasileiros são SEMPRE dia/mês/ano (09/12/2026 é 9 de dezembro, nunca 12 de setembro) — converta pra AAAA-MM-DD sem trocar dia e mês. Quando houver várias parcelas (fatura/duplicata de DANFE), liste TODAS, na ordem cronológica de vencimento, cada uma com o valor da própria linha da fatura (os valores costumam ser iguais, com a diferença de centavos numa única parcela — confira em qual linha ela está, não assuma). Se uma data quebrar a sequência regular das outras (ex: parcelas quinzenais e uma delas cai meses antes), releia: provavelmente dia e mês foram trocados.
+- o(s) valor(es) e a(s) respectiva(s) data(s) de vencimento — um documento pode ter mais de uma parcela/vencimento. COPIE cada data exatamente como está impressa ("09/10/2026"), sem converter de formato — o sistema faz a conversão. Quando houver várias parcelas (fatura/duplicatas de DANFE), liste TODAS, cada uma com o número da duplicata, a data e o valor da MESMA linha/célula da tabela (na DANFE essa tabela costuma vir em colunas lado a lado — leia cada trio número/vencimento/valor junto, sem misturar com o vizinho). Os valores costumam ser iguais, com a diferença de centavos numa única parcela — confira em qual linha ela está, não assuma.
+- a data de emissão do documento, também copiada exatamente como impressa
 - uma nota de confiança da sua leitura
 - SÓ para nota fiscal (NF-e/DANFE): preencha "documentDirection" com "VENDA" se UMA DESSAS EMPRESAS aparecer como EMITENTE (campo "Emitente" ou o cabeçalho da nota — ela vendeu), ou "COMPRA" se aparecer como DESTINATÁRIO/REMETENTE (ela comprou). Se nenhuma das empresas da lista aparecer no documento (nem como emitente nem como destinatário), deixe "documentDirection" e "supplierNameRaw" como sua melhor leitura mesmo assim, mas registre em "notes" que o documento não parece ser de nenhuma das empresas de ${ownNameExample} — pode ser um arquivo enviado por engano. Deixe "documentDirection" null pra qualquer outro tipo de documento (boleto, guia, recibo) — essa distinção emitente/destinatário só vale pra nota fiscal.
 
@@ -163,12 +197,23 @@ export async function extractDocumentPages(params: {
   mimeType: string;
   ownNames: string[];
 }): Promise<ExtractedPage[]> {
-  const message = await client.messages.create({
-    model: "claude-sonnet-5",
-    max_tokens: 8192,
+  // Modelo mais preciso, pensando com calma (effort alto) — o usuário prefere
+  // que a leitura demore a lançar errado. Streaming porque uma leitura
+  // caprichada de um PDF com várias notas pode passar do tempo de uma chamada
+  // simples.
+  const stream = client.beta.messages.stream({
+    model: "claude-opus-5-5",
+    max_tokens: 64000,
+    thinking: { type: "adaptive" },
+    output_config: {
+      effort: "high",
+      format: { type: "json_schema", schema: OUTPUT_SCHEMA },
+    },
+    // Se a IA recusar ler o documento por engano (filtro de segurança), a
+    // própria API tenta de novo em outro modelo em vez de falhar.
+    betas: ["server-side-fallback-2026-07-01"],
+    fallbacks: "default",
     system: buildSystemPrompt(params.ownNames),
-    tools: [EXTRACTION_TOOL],
-    tool_choice: { type: "tool", name: "record_extracted_pages" },
     messages: [
       {
         role: "user",
@@ -182,33 +227,53 @@ export async function extractDocumentPages(params: {
       },
     ],
   });
+  const message = await stream.finalMessage();
 
-  const toolUse = message.content.find(
-    (block): block is Anthropic.ToolUseBlock => block.type === "tool_use"
-  );
+  if (message.stop_reason === "refusal") {
+    throw new Error("A IA se recusou a ler este documento.");
+  }
+  if (message.stop_reason === "max_tokens") {
+    throw new Error("A leitura deste documento ficou grande demais e foi cortada — divida o arquivo.");
+  }
 
-  if (!toolUse) {
+  const text = message.content.find(
+    (block): block is Anthropic.Beta.BetaTextBlock => block.type === "text"
+  )?.text;
+  if (!text) {
     throw new Error("A IA não retornou dados estruturados para este documento.");
   }
 
-  const result = toolUse.input as { pages: ExtractedPage[] | null | undefined };
+  const result = JSON.parse(text) as { pages: RawExtractedPage[] | null | undefined };
   // A IA às vezes volta com um campo obrigatório vazio/nulo pra alguma página
   // (ou até pra "pages" inteiro) mesmo o schema pedindo o contrário — sem essa
   // validação, 1 página ruim quebrava o processamento do arquivo INTEIRO.
   const pages = result.pages ?? [];
   return pages
-    .map((page) => ({
-      ...page,
-      installments: (page.installments ?? []).map((i) => ({
-        ...i,
-        // A IA às vezes devolve um dueDate com lixo (ex: "2026-09-25}") —
-        // isso passa como "tem data" pra tela de perguntas (o campo não é
-        // vazio) mas dá "Invalid Date" na hora de exibir/gravar, sem nunca
-        // pedir pra corrigir. Trata qualquer data fora do formato esperado
-        // como null, igual a "não achou vencimento" — a tela já sabe pedir.
-        dueDate: sanitizeIsoDate(i.dueDate),
-      })),
-    }))
+    .map((page): ExtractedPage => {
+      const { issueDateText, ...rest } = page;
+      const issueDate = parseBrDate(issueDateText);
+      const installments = (page.installments ?? [])
+        .map((i) => ({
+          amount: i.amount,
+          // Data ilegível/fora do formato vira null — igual a "não achou
+          // vencimento", e a tela de perguntas pede a data.
+          dueDate: parseBrDate(i.dueDateText),
+          dueDateText: i.dueDateText,
+          parcelNumber: i.parcelNumber,
+        }))
+        // Ordem cronológica pro lançamento (parcela 1/N = a que vence
+        // primeiro); as sem data ficam por último.
+        .sort((a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999"));
+      return {
+        ...rest,
+        // CNPJ/CPF com dígito verificador errado é leitura ruim — melhor sem
+        // CNPJ (o fornecedor é achado pelo nome) do que com um inventado.
+        taxId: isValidTaxId(rest.taxId) ? rest.taxId : null,
+        issueDate,
+        installments,
+        reviewReasons: installmentDateProblems(installments, issueDate),
+      };
+    })
     .filter((page) => {
       const validInstallments =
         Array.isArray(page.installments) &&
