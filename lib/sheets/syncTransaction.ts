@@ -3,6 +3,7 @@ import { getGoogleClientsForCompany } from "./client";
 import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
 import { PAID_LOG_TAB, RECEBIMENTOS_TAB, recebimentosMonthBlockRows } from "./provisionCompanySheet";
 import { toBRDateString } from "@/lib/utils/formatDateBR";
+import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
 import {
   APP_COLUMN_COUNT,
   columnLetter,
@@ -28,11 +29,12 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
  *
  * TRAVA DE DUPLICATA: é aqui que tudo entra na planilha (notas, perguntas,
  * relação de pagamentos, extrato, manual, repetir), então é aqui que a trava
- * fica. Lançamento NOVO (nunca gravado) idêntico a outro já gravado — mesmo
- * fornecedor, vencimento e valor, vindo de outro arquivo — é a mesma cobrança
- * chegando de novo: não ganha linha, é descartado e devolve `duplicateOf`.
- * Gêmeos dentro do mesmo arquivo continuam valendo, e edição/reenvio
- * (`skipDuplicateGuard`) nunca descarta nada.
+ * fica. Regra da casa (ver findIdenticalTransaction): no mesmo dia, mesmo
+ * fornecedor e mesmo valor só existe UM lançamento, sem exceção de origem.
+ * Lançamento NOVO (nunca gravado) idêntico a outro já gravado não ganha
+ * linha: é descartado e devolve `duplicateOf`. Reenvio manual
+ * (`skipDuplicateGuard`) nunca descarta nada; edições são barradas na rota
+ * de edição.
  */
 export async function syncTransactionToSheet(
   transactionId: string,
@@ -51,20 +53,15 @@ export async function syncTransactionToSheet(
   const googleRefreshToken = transaction.company.googleRefreshToken;
 
   if (!options?.skipDuplicateGuard && !transaction.sheetCellRef) {
-    const twin = await prisma.transaction.findFirst({
-      where: {
-        id: { not: transaction.id },
-        companyId: transaction.companyId,
-        kind: transaction.kind,
-        supplierId: transaction.supplierId,
-        dueDate: transaction.dueDate,
-        amount: transaction.amount,
-        sheetCellRef: { not: null },
-        ...(transaction.documentId
-          ? { OR: [{ documentId: null }, { documentId: { not: transaction.documentId } }] }
-          : {}),
-      },
-      select: { id: true },
+    const twin = await findIdenticalTransaction({
+      companyId: transaction.companyId,
+      kind: transaction.kind,
+      dueDate: transaction.dueDate,
+      amount: transaction.amount,
+      supplierId: transaction.supplierId,
+      supplierName: transaction.supplier.name,
+      excludeId: transaction.id,
+      onlyInSheet: true,
     });
     if (twin) {
       console.warn(

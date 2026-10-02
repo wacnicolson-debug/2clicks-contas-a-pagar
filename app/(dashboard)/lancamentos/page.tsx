@@ -10,7 +10,7 @@ const STATUS_LABEL: Record<string, string> = {
   A_PAGAR: "A pagar",
 };
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 500;
 
 function firstParam(value: string | string[] | undefined): string {
   return (Array.isArray(value) ? value[0] : value)?.trim() ?? "";

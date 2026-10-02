@@ -9,6 +9,7 @@ import {
   updateTransactionRowInPlace,
 } from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
+import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
 
 type PatchBody = {
   categoryName?: string;
@@ -39,6 +40,7 @@ export async function PATCH(
 
   const transaction = await prisma.transaction.findFirst({
     where: { id, companyId: session.companyId },
+    include: { supplier: { select: { name: true } } },
   });
   if (!transaction) {
     return NextResponse.json({ error: "Lançamento não encontrado." }, { status: 404 });
@@ -64,6 +66,27 @@ export async function PATCH(
   const amount =
     typeof body.amount === "number" && body.amount > 0 ? body.amount : Number(transaction.amount);
   const dueDate = body.dueDate ? new Date(body.dueDate) : transaction.dueDate;
+
+  // Regra da casa: no mesmo dia, mesmo fornecedor e mesmo valor só um lançamento.
+  const identical = await findIdenticalTransaction({
+    companyId: transaction.companyId,
+    kind: transaction.kind,
+    dueDate,
+    amount,
+    supplierId: transaction.supplierId,
+    supplierName: transaction.supplier.name,
+    excludeId: transaction.id,
+  });
+  if (identical) {
+    return NextResponse.json(
+      {
+        error:
+          "Já existe outro lançamento igual (mesmo fornecedor, vencimento e valor). Não pode ter dois iguais no mesmo dia.",
+      },
+      { status: 409 }
+    );
+  }
+
   const noteNumber =
     body.noteNumber !== undefined ? body.noteNumber?.trim() || null : transaction.noteNumber;
   const description =
