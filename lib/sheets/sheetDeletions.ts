@@ -1,3 +1,4 @@
+import type { sheets_v4 } from "googleapis";
 import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { MONTHS } from "./provisionCompanySheet";
@@ -19,6 +20,85 @@ const LAST_BLOCK_ROW1 = HEADER_ROWS + DAYS_IN_BLOCK * ROWS_PER_DAY;
 // Um processamento por empresa por vez nesta instância (duas abas abertas
 // consultando juntas não disparam a mesma exclusão duas vezes).
 const running = new Set<string>();
+
+// Onde o app cria a coluna EXCLUIR quando a aba ainda não tem uma (T, bem
+// longe de PAGO/CONFERIDO pra não marcar sem querer). Depois de criada, o
+// usuário pode mover — o app sempre acha pelo cabeçalho.
+const DEFAULT_EXCLUIR_COLUMN = 19;
+const PROVISION_RETRY_MS = 10 * 60 * 1000;
+const provisionAttempts = new Map<string, number>();
+
+/**
+ * Cria a coluna EXCLUIR (cabeçalho na linha 2 + caixinhas até o fim dos
+ * blocos de dia) nas abas de mês que ainda não têm. Só é chamada para abas
+ * em que a coluna padrão está vazia no cabeçalho, e não apaga nem sobrescreve
+ * nada. Se falhar, só tenta de novo depois de alguns minutos.
+ */
+async function ensureExcluirColumn(
+  sheets: ReturnType<typeof getGoogleClientsForCompany>["sheets"],
+  spreadsheetId: string,
+  tabs: string[]
+): Promise<void> {
+  const last = provisionAttempts.get(spreadsheetId);
+  if (last && Date.now() - last < PROVISION_RETRY_MS) return;
+  provisionAttempts.set(spreadsheetId, Date.now());
+
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets.properties(sheetId,title,gridProperties)",
+  });
+
+  const requests: sheets_v4.Schema$Request[] = [];
+  for (const tab of tabs) {
+    const props = meta.data.sheets?.find((s) => s.properties?.title === tab)?.properties;
+    if (!props || props.sheetId == null) continue;
+    const sheetId = props.sheetId;
+
+    const columnCount = props.gridProperties?.columnCount ?? 0;
+    if (columnCount <= DEFAULT_EXCLUIR_COLUMN) {
+      requests.push({
+        appendDimension: { sheetId, dimension: "COLUMNS", length: DEFAULT_EXCLUIR_COLUMN + 1 - columnCount },
+      });
+    }
+    requests.push({
+      updateCells: {
+        range: {
+          sheetId,
+          startRowIndex: HEADER_ROWS - 1,
+          endRowIndex: HEADER_ROWS,
+          startColumnIndex: DEFAULT_EXCLUIR_COLUMN,
+          endColumnIndex: DEFAULT_EXCLUIR_COLUMN + 1,
+        },
+        rows: [
+          {
+            values: [
+              {
+                userEnteredValue: { stringValue: "EXCLUIR" },
+                userEnteredFormat: { textFormat: { bold: true } },
+              },
+            ],
+          },
+        ],
+        fields: "userEnteredValue,userEnteredFormat.textFormat",
+      },
+    });
+    requests.push({
+      setDataValidation: {
+        range: {
+          sheetId,
+          startRowIndex: HEADER_ROWS,
+          endRowIndex: LAST_BLOCK_ROW1,
+          startColumnIndex: DEFAULT_EXCLUIR_COLUMN,
+          endColumnIndex: DEFAULT_EXCLUIR_COLUMN + 1,
+        },
+        rule: { condition: { type: "BOOLEAN" }, strict: true, showCustomUi: true },
+      },
+    });
+  }
+
+  if (requests.length === 0) return;
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
+}
 
 /** Dia do mês dono da linha (1-based) nos blocos de 30 linhas, ou null se está fora dos blocos. */
 export function dayOfSheetRow(row1: number): number | null {
@@ -76,6 +156,22 @@ export async function processSheetDeletions(
           const index = findExcluirColumn(header);
           if (index !== null) withColumn.push({ tab, index });
         });
+        // Abas sem a coluna (e com a posição padrão livre): o app cria. As
+        // recém-criadas só entram na leitura de marcações na próxima rodada.
+        const missing = MONTHS.filter((tab) => {
+          const header = headerByTab.get(tab) ?? [];
+          return (
+            findExcluirColumn(header) === null &&
+            String(header[DEFAULT_EXCLUIR_COLUMN] ?? "").trim() === ""
+          );
+        });
+        if (missing.length > 0) {
+          try {
+            await ensureExcluirColumn(sheets, spreadsheetId, missing);
+          } catch (err) {
+            console.error(`Falha ao criar a coluna EXCLUIR (planilha ${companySheet.year}):`, err);
+          }
+        }
         if (withColumn.length === 0) continue;
 
         const flagRes = await sheets.spreadsheets.values.batchGet({
