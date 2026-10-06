@@ -9,6 +9,7 @@ import {
   updateTransactionRowInPlace,
 } from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
+import { deleteTransactionEverywhere } from "@/lib/transactions/deleteTransaction";
 import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
 
 type PatchBody = {
@@ -189,22 +190,7 @@ export async function DELETE(
     return NextResponse.json({ error: "Lançamento não encontrado." }, { status: 404 });
   }
 
-  await clearTransactionFromSheet(transaction.id);
-  await prisma.transaction.delete({ where: { id: transaction.id } });
-
-  // Um lançamento excluído é sinal de que o "perfil aprendido" desse
-  // fornecedor errou em algo — reseta pra ele voltar a perguntar tudo na
-  // próxima nota, em vez de repetir o mesmo erro automaticamente.
-  await prisma.supplier.update({
-    where: { id: transaction.supplierId },
-    data: {
-      kind: null,
-      defaultStatus: null,
-      paymentMethod: null,
-      pixKey: null,
-      defaultCategoryId: null,
-    },
-  });
+  await deleteTransactionEverywhere(transaction.id);
 
   return NextResponse.json({ ok: true });
 }

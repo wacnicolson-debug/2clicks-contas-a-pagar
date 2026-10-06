@@ -27,6 +27,16 @@ export function findDayColumnOffset(headerRow: unknown[] | undefined): number {
   return index >= 0 ? index : 0;
 }
 
+// Coluna da caixinha EXCLUIR (N): vem logo depois de PAGO (L) e CONFERIDO (M),
+// que também são colunas fixas — o usuário cria o cabeçalho e as caixinhas
+// na planilha, o app só lê e preserva.
+export const EXCLUIR_COLUMN_INDEX = 13;
+
+/** A coluna só vale se o cabeçalho dela (linha 2) for "EXCLUIR" — sem isso o app nunca apaga nada. */
+export function isExcluirHeader(headerRow: unknown[] | undefined): boolean {
+  return normalizeText(String(headerRow?.[EXCLUIR_COLUMN_INDEX] ?? "")) === "excluir";
+}
+
 /** Lê o cabeçalho e o bloco do dia numa chamada só (uma leitura a menos por lançamento). */
 export async function readDayBlockLayout(params: {
   sheets: sheets_v4.Sheets;
@@ -34,7 +44,7 @@ export async function readDayBlockLayout(params: {
   tabName: string;
   blockStart1: number;
   blockEnd1: number;
-}): Promise<{ offset: number; rows: unknown[][] }> {
+}): Promise<{ offset: number; rows: unknown[][]; header: unknown[] }> {
   const res = await params.sheets.spreadsheets.values.batchGet({
     spreadsheetId: params.spreadsheetId,
     ranges: [
@@ -50,10 +60,11 @@ export async function readDayBlockLayout(params: {
   return {
     offset: findDayColumnOffset(header?.values?.[0]),
     rows: (block?.values ?? []) as unknown[][],
+    header: (header?.values?.[0] ?? []) as unknown[],
   };
 }
 
-function cellToNumber(cell: unknown): number | null {
+export function cellToNumber(cell: unknown): number | null {
   if (typeof cell === "number") return cell;
   if (typeof cell !== "string") return null;
   const cleaned = cell.replace(/R\$|\s/g, "").replace(/\./g, "").replace(",", ".");

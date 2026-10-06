@@ -6,7 +6,9 @@ import { toBRDateString } from "@/lib/utils/formatDateBR";
 import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
 import {
   APP_COLUMN_COUNT,
+  EXCLUIR_COLUMN_INDEX,
   columnLetter,
+  isExcluirHeader,
   readDayBlockLayout,
   rowMatchesTransaction,
 } from "./dayBlockLayout";
@@ -234,13 +236,17 @@ export async function rebuildDayBlock(
   const blockEnd1 = blockStart1 + ROWS_PER_DAY - 1;
 
   // A coluna "Dia" pode não ser mais a A (usuário inseriu coluna(s) antes).
-  const { offset, rows: oldRows } = await readDayBlockLayout({
+  const { offset, rows: oldRows, header } = await readDayBlockLayout({
     sheets,
     spreadsheetId,
     tabName: monthName,
     blockStart1,
     blockEnd1,
   });
+  // Coluna EXCLUIR (marcação pra apagar o lançamento): também presa à linha,
+  // então precisa acompanhar o lançamento no reordenamento — senão a marcação
+  // de um passaria pro que ocupasse a linha dele e o apagaria por engano.
+  const excluirEnabled = isExcluirHeader(header);
 
   // As caixinhas PAGO/CONFERIDO (colunas L/M) são marcação manual, presa à
   // LINHA — mas essa função reordena o bloco por valor a cada mudança (novo
@@ -251,16 +257,23 @@ export async function rebuildDayBlock(
   // marcação junto pra a posição nova; lançamento sem linha antiga (novo)
   // nasce desmarcado.
   const consumedOldRowIndexes = new Set<number>();
-  const checkboxRows: boolean[][] = blockTransactions.map((t) => {
+  const checkboxRows: boolean[][] = [];
+  const excluirRows: boolean[][] = [];
+  for (const t of blockTransactions) {
     const amount = Number(t.amount);
     const matchIndex = oldRows.findIndex(
       (row, i) => !consumedOldRowIndexes.has(i) && rowMatchesTransaction(row, t.supplier.name, amount)
     );
-    if (matchIndex < 0) return [false, false];
+    if (matchIndex < 0) {
+      checkboxRows.push([false, false]);
+      excluirRows.push([false]);
+      continue;
+    }
     consumedOldRowIndexes.add(matchIndex);
     const row = oldRows[matchIndex];
-    return [row[11] === true, row[12] === true];
-  });
+    checkboxRows.push([row[11] === true, row[12] === true]);
+    excluirRows.push([row[EXCLUIR_COLUMN_INDEX] === true]);
+  }
 
   const blockRows: (string | number)[][] = blockTransactions.map((t) => {
     const tCostDate = t.noteDate ?? t.dueDate;
@@ -272,19 +285,26 @@ export async function rebuildDayBlock(
   while (blockRows.length < ROWS_PER_DAY) {
     blockRows.push([day, "", "", "", "", "", "", "", ""]);
     checkboxRows.push([false, false]);
+    excluirRows.push([false]);
+  }
+
+  const dataRanges = [
+    {
+      range: `'${monthName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
+      values: blockRows,
+    },
+    { range: `'${monthName}'!L${blockStart1}:M${blockEnd1}`, values: checkboxRows },
+  ];
+  if (excluirEnabled) {
+    const col = columnLetter(EXCLUIR_COLUMN_INDEX);
+    dataRanges.push({ range: `'${monthName}'!${col}${blockStart1}:${col}${blockEnd1}`, values: excluirRows });
   }
 
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
     requestBody: {
       valueInputOption: "USER_ENTERED",
-      data: [
-        {
-          range: `'${monthName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
-          values: blockRows,
-        },
-        { range: `'${monthName}'!L${blockStart1}:M${blockEnd1}`, values: checkboxRows },
-      ],
+      data: dataRanges,
     },
   });
 
