@@ -207,6 +207,12 @@ export default async function DashboardPage({
           >
             Lançamentos
           </Link>
+          <Link
+            href="/empresas/nova"
+            className="bg-white border border-neutral-300 text-neutral-700 rounded-md px-4 py-2 text-sm font-medium"
+          >
+            Nova empresa
+          </Link>
         </div>
 
         <div className="grid grid-cols-2 gap-4">
