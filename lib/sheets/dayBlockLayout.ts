@@ -27,14 +27,15 @@ export function findDayColumnOffset(headerRow: unknown[] | undefined): number {
   return index >= 0 ? index : 0;
 }
 
-// Coluna da caixinha EXCLUIR (N): vem logo depois de PAGO (L) e CONFERIDO (M),
-// que também são colunas fixas — o usuário cria o cabeçalho e as caixinhas
-// na planilha, o app só lê e preserva.
-export const EXCLUIR_COLUMN_INDEX = 13;
-
-/** A coluna só vale se o cabeçalho dela (linha 2) for "EXCLUIR" — sem isso o app nunca apaga nada. */
-export function isExcluirHeader(headerRow: unknown[] | undefined): boolean {
-  return normalizeText(String(headerRow?.[EXCLUIR_COLUMN_INDEX] ?? "")) === "excluir";
+/**
+ * Coluna da caixinha EXCLUIR, achada pelo cabeçalho (linha 2, de A até Z) — o
+ * usuário escolhe onde ela fica (de preferência longe de PAGO/CONFERIDO, pra
+ * não marcar sem querer). Sem cabeçalho "EXCLUIR" devolve null e o app nunca
+ * apaga nada por esse caminho.
+ */
+export function findExcluirColumn(headerRow: unknown[] | undefined): number | null {
+  const index = (headerRow ?? []).findIndex((cell) => normalizeText(String(cell ?? "")) === "excluir");
+  return index >= 0 ? index : null;
 }
 
 /** Lê o cabeçalho e o bloco do dia numa chamada só (uma leitura a menos por lançamento). */

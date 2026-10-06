@@ -6,9 +6,8 @@ import { toBRDateString } from "@/lib/utils/formatDateBR";
 import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
 import {
   APP_COLUMN_COUNT,
-  EXCLUIR_COLUMN_INDEX,
   columnLetter,
-  isExcluirHeader,
+  findExcluirColumn,
   readDayBlockLayout,
   rowMatchesTransaction,
 } from "./dayBlockLayout";
@@ -246,7 +245,7 @@ export async function rebuildDayBlock(
   // Coluna EXCLUIR (marcação pra apagar o lançamento): também presa à linha,
   // então precisa acompanhar o lançamento no reordenamento — senão a marcação
   // de um passaria pro que ocupasse a linha dele e o apagaria por engano.
-  const excluirEnabled = isExcluirHeader(header);
+  const excluirIndex = findExcluirColumn(header);
 
   // As caixinhas PAGO/CONFERIDO (colunas L/M) são marcação manual, presa à
   // LINHA — mas essa função reordena o bloco por valor a cada mudança (novo
@@ -272,7 +271,7 @@ export async function rebuildDayBlock(
     consumedOldRowIndexes.add(matchIndex);
     const row = oldRows[matchIndex];
     checkboxRows.push([row[11] === true, row[12] === true]);
-    excluirRows.push([row[EXCLUIR_COLUMN_INDEX] === true]);
+    excluirRows.push([excluirIndex !== null && row[excluirIndex] === true]);
   }
 
   const blockRows: (string | number)[][] = blockTransactions.map((t) => {
@@ -295,8 +294,8 @@ export async function rebuildDayBlock(
     },
     { range: `'${monthName}'!L${blockStart1}:M${blockEnd1}`, values: checkboxRows },
   ];
-  if (excluirEnabled) {
-    const col = columnLetter(EXCLUIR_COLUMN_INDEX);
+  if (excluirIndex !== null) {
+    const col = columnLetter(excluirIndex);
     dataRanges.push({ range: `'${monthName}'!${col}${blockStart1}:${col}${blockEnd1}`, values: excluirRows });
   }
 

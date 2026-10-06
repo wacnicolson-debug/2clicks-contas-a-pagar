@@ -2,11 +2,10 @@ import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { MONTHS } from "./provisionCompanySheet";
 import {
-  EXCLUIR_COLUMN_INDEX,
   cellToNumber,
   columnLetter,
   findDayColumnOffset,
-  isExcluirHeader,
+  findExcluirColumn,
   rowMatchesTransaction,
 } from "./dayBlockLayout";
 import { rebuildDayBlock } from "./syncTransaction";
@@ -33,8 +32,9 @@ export function dayOfSheetRow(row1: number): number | null {
  * Excluir do app. A planilha não avisa o app de nada — por isso é o app que
  * confere de tempos em tempos (ver AutoRefresh).
  *
- * Segurança: só vale em aba cujo cabeçalho (linha 2, coluna N) é "EXCLUIR", e
- * o lançamento é achado pelo CONTEÚDO da linha (fornecedor + valor + dia),
+ * Segurança: só vale em aba que tem uma coluna com cabeçalho "EXCLUIR" na
+ * linha 2 (em qualquer lugar de A a Z), e o lançamento é achado pelo
+ * CONTEÚDO da linha (fornecedor + valor + dia),
  * nunca só pela posição — se a planilha estiver desalinhada com o banco, não
  * acha nada e não apaga nada.
  */
@@ -53,57 +53,62 @@ export async function processSheetDeletions(
     }
 
     const { sheets } = getGoogleClientsForCompany(company.googleRefreshToken);
-    const col = columnLetter(EXCLUIR_COLUMN_INDEX);
     let deleted = 0;
     let unmatched = 0;
 
     for (const companySheet of company.sheets) {
       const spreadsheetId = companySheet.spreadsheetId;
 
-      // Cabeçalho (linha 2) + todas as caixinhas da coluna, 1 chamada pras 12 abas.
-      let flagRanges;
+      // 1) Cabeçalho (linha 2) das 12 abas — acha onde está a coluna EXCLUIR de cada uma.
+      // 2) Só as caixinhas dessa coluna, nas abas que têm ela.
+      const headerByTab = new Map<string, unknown[]>();
+      const flagged: { tab: string; row1: number }[] = [];
       try {
-        const res = await sheets.spreadsheets.values.batchGet({
+        const headerRes = await sheets.spreadsheets.values.batchGet({
           spreadsheetId,
-          ranges: MONTHS.map((m) => `'${m}'!${col}${HEADER_ROWS}:${col}${LAST_BLOCK_ROW1}`),
+          ranges: MONTHS.map((m) => `'${m}'!A${HEADER_ROWS}:Z${HEADER_ROWS}`),
+          valueRenderOption: "UNFORMATTED_VALUE",
+        });
+        const withColumn: { tab: string; index: number }[] = [];
+        MONTHS.forEach((tab, i) => {
+          const header = (headerRes.data.valueRanges?.[i]?.values?.[0] ?? []) as unknown[];
+          headerByTab.set(tab, header);
+          const index = findExcluirColumn(header);
+          if (index !== null) withColumn.push({ tab, index });
+        });
+        if (withColumn.length === 0) continue;
+
+        const flagRes = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId,
+          ranges: withColumn.map(
+            ({ tab, index }) =>
+              `'${tab}'!${columnLetter(index)}${HEADER_ROWS + 1}:${columnLetter(index)}${LAST_BLOCK_ROW1}`
+          ),
           majorDimension: "COLUMNS",
           valueRenderOption: "UNFORMATTED_VALUE",
         });
-        flagRanges = res.data.valueRanges ?? [];
+        withColumn.forEach(({ tab }, i) => {
+          const column = (flagRes.data.valueRanges?.[i]?.values?.[0] ?? []) as unknown[];
+          for (let j = 0; j < column.length; j++) {
+            if (column[j] === true) flagged.push({ tab, row1: HEADER_ROWS + 1 + j });
+          }
+        });
       } catch (err) {
         console.error(`Falha ao ler a coluna EXCLUIR (planilha ${companySheet.year}):`, err);
         continue;
       }
-
-      const flagged: { tab: string; row1: number }[] = [];
-      MONTHS.forEach((tab, i) => {
-        const column = (flagRanges[i]?.values?.[0] ?? []) as unknown[];
-        const headerRow: unknown[] = [];
-        headerRow[EXCLUIR_COLUMN_INDEX] = column[0];
-        if (!isExcluirHeader(headerRow)) return;
-        for (let j = 1; j < column.length; j++) {
-          if (column[j] === true) flagged.push({ tab, row1: HEADER_ROWS + j });
-        }
-      });
       if (flagged.length === 0) continue;
 
-      // Conteúdo das linhas marcadas (+ cabeçalho de cada aba, pra achar a coluna "Dia").
-      const tabs = [...new Set(flagged.map((f) => f.tab))];
-      const ranges = [
-        ...tabs.map((tab) => `'${tab}'!A${HEADER_ROWS}:Z${HEADER_ROWS}`),
-        ...flagged.map((f) => `'${f.tab}'!A${f.row1}:Z${f.row1}`),
-      ];
+      // Conteúdo das linhas marcadas.
       const contentRes = await sheets.spreadsheets.values.batchGet({
         spreadsheetId,
-        ranges,
+        ranges: flagged.map((f) => `'${f.tab}'!A${f.row1}:Z${f.row1}`),
         valueRenderOption: "UNFORMATTED_VALUE",
       });
       const contentRanges = contentRes.data.valueRanges ?? [];
-      const headerByTab = new Map<string, unknown[]>();
-      tabs.forEach((tab, i) => headerByTab.set(tab, (contentRanges[i]?.values?.[0] ?? []) as unknown[]));
 
       for (const [i, f] of flagged.entries()) {
-        const row = (contentRanges[tabs.length + i]?.values?.[0] ?? []) as unknown[];
+        const row = (contentRanges[i]?.values?.[0] ?? []) as unknown[];
         const offset = findDayColumnOffset(headerByTab.get(f.tab));
         const supplierName = String(row[offset + 2] ?? "").trim();
         const amount = cellToNumber(row[offset + 6]);
