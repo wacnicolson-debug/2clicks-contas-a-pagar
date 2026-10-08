@@ -25,7 +25,10 @@ const LAST_BLOCK_ROW1 = HEADER_ROWS + DAYS_IN_BLOCK * ROWS_PER_DAY;
 
 // Um processamento por empresa por vez nesta instância (duas abas abertas
 // consultando juntas não disparam a mesma exclusão duas vezes).
-const running = new Set<string>();
+// Guarda quando começou: se uma rodada travar (chamada do Google que não
+// volta), a próxima tenta de novo depois de 60 s em vez de ficar bloqueada.
+const running = new Map<string, number>();
+const RUNNING_STALE_MS = 60 * 1000;
 
 // Onde o app cria a coluna EXCLUIR quando a aba ainda não tem uma (T, bem
 // longe de PAGO/CONFERIDO pra não marcar sem querer). Depois de criada, o
@@ -140,8 +143,37 @@ async function ensureCheckboxColumn(
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
 }
 
+const HEADER_CACHE_MS = 2 * 60 * 1000;
+const headerCache = new Map<string, { at: number; byTab: Map<string, unknown[]> }>();
+
 const HEAL_INTERVAL_MS = 30 * 60 * 1000;
 const lastHeal = new Map<string, number>();
+const healing = new Set<string>();
+
+/**
+ * Realinhamento dos blocos (ver healMisalignedBlocks) pra TODAS as planilhas
+ * da empresa. Roda DEPOIS da resposta da conferência (ver a rota), pra nunca
+ * atrasar uma exclusão marcada na planilha.
+ */
+export async function healAllSheets(companyId: string): Promise<void> {
+  if (healing.has(companyId)) return;
+  healing.add(companyId);
+  try {
+    const company = await prisma.company.findUnique({
+      where: { id: companyId },
+      include: { sheets: true },
+    });
+    if (!company?.googleRefreshToken || company.sheets.length === 0) return;
+    const { sheets } = getGoogleClientsForCompany(company.googleRefreshToken);
+    for (const companySheet of company.sheets) {
+      await healMisalignedBlocks(sheets, companyId, companySheet);
+    }
+  } catch (err) {
+    console.error("Falha no realinhamento dos blocos:", err);
+  } finally {
+    healing.delete(companyId);
+  }
+}
 
 /**
  * Realinha, no mês atual e no seguinte, lançamentos que ficaram em linhas
@@ -200,8 +232,9 @@ async function healMisalignedBlocks(
 export async function processSheetDeletions(
   companyId: string
 ): Promise<{ deleted: number; unmatched: number }> {
-  if (running.has(companyId)) return { deleted: 0, unmatched: 0 };
-  running.add(companyId);
+  const startedAt = running.get(companyId);
+  if (startedAt && Date.now() - startedAt < RUNNING_STALE_MS) return { deleted: 0, unmatched: 0 };
+  running.set(companyId, Date.now());
   try {
     const company = await prisma.company.findUnique({
       where: { id: companyId },
@@ -218,28 +251,37 @@ export async function processSheetDeletions(
     for (const companySheet of company.sheets) {
       const spreadsheetId = companySheet.spreadsheetId;
 
-      await healMisalignedBlocks(sheets, companyId, companySheet);
-
-      // 1) Cabeçalho (linha 2) das 12 abas — acha onde está a coluna EXCLUIR de cada uma.
-      // 2) Só as caixinhas dessa coluna, nas abas que têm ela.
-      const headerByTab = new Map<string, unknown[]>();
+      // 1) Cabeçalho (linha 2) das 12 abas — acha onde está a coluna EXCLUIR de
+      //    cada uma. Fica guardado em memória por 2 min: a conferência roda a
+      //    cada poucos segundos e reler isso toda vez estourava a cota do Google.
+      // 2) Só as caixinhas dessa coluna, nas abas que têm ela (1 chamada).
+      let headerByTab = new Map<string, unknown[]>();
       const flagged: { tab: string; row1: number }[] = [];
       try {
-        const headerRes = await sheets.spreadsheets.values.batchGet({
-          spreadsheetId,
-          ranges: MONTHS.map((m) => `'${m}'!A${HEADER_ROWS}:Z${HEADER_ROWS}`),
-          valueRenderOption: "UNFORMATTED_VALUE",
-        });
+        const cached = headerCache.get(spreadsheetId);
+        const usedCache = !!cached && Date.now() - cached.at < HEADER_CACHE_MS;
+        if (usedCache) {
+          headerByTab = cached!.byTab;
+        } else {
+          const headerRes = await sheets.spreadsheets.values.batchGet({
+            spreadsheetId,
+            ranges: MONTHS.map((m) => `'${m}'!A${HEADER_ROWS}:Z${HEADER_ROWS}`),
+            valueRenderOption: "UNFORMATTED_VALUE",
+          });
+          MONTHS.forEach((tab, i) => {
+            headerByTab.set(tab, (headerRes.data.valueRanges?.[i]?.values?.[0] ?? []) as unknown[]);
+          });
+          headerCache.set(spreadsheetId, { at: Date.now(), byTab: headerByTab });
+        }
         const withColumn: { tab: string; index: number }[] = [];
-        MONTHS.forEach((tab, i) => {
-          const header = (headerRes.data.valueRanges?.[i]?.values?.[0] ?? []) as unknown[];
-          headerByTab.set(tab, header);
-          const index = findExcluirColumn(header);
+        MONTHS.forEach((tab) => {
+          const index = findExcluirColumn(headerByTab.get(tab) ?? []);
           if (index !== null) withColumn.push({ tab, index });
         });
-        // Abas sem a coluna (e com a posição padrão livre): o app cria. As
+        // Abas sem a coluna (e com a posição padrão livre): o app cria — só
+        // quando o cabeçalho acabou de ser lido (não a cada conferência). As
         // recém-criadas só entram na leitura de marcações na próxima rodada.
-        const missing = MONTHS.filter((tab) => {
+        const missing = usedCache ? [] : MONTHS.filter((tab) => {
           const header = headerByTab.get(tab) ?? [];
           return (
             findExcluirColumn(header) === null &&
@@ -257,7 +299,7 @@ export async function processSheetDeletions(
         // CONCILIADO (conciliação bancária): caixinha ao lado de CONFERIDO que
         // pinta a linha de verde. Mesmo critério: só cria onde não existe e a
         // posição padrão está livre.
-        const missingConciliado = MONTHS.filter((tab) => {
+        const missingConciliado = usedCache ? [] : MONTHS.filter((tab) => {
           const header = headerByTab.get(tab) ?? [];
           return (
             findHeaderColumn(header, "conciliado") === null &&

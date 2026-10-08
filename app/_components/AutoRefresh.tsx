@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 const INTERVAL_MS = 15000;
-const SHEET_CHECK_MS = 20000;
+const SHEET_CHECK_MS = 8000;
 
 // Atualiza a página sozinha (re-busca os dados do servidor, sem recarregar
 // tudo) — pra lançamentos/respostas pendentes novos aparecerem sem precisar
