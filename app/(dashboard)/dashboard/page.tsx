@@ -5,6 +5,7 @@ import { isGoogleTokenValid } from "@/lib/sheets/client";
 import { LogoutButton } from "./logout-button";
 import { AutoRefresh } from "@/app/_components/AutoRefresh";
 import { DeletePendingButton } from "./delete-pending-button";
+import { DismissDocumentButton } from "./dismiss-document-button";
 import { RemoveSheetButton } from "./remove-sheet-button";
 
 function startOfDay(d: Date) {
@@ -55,7 +56,7 @@ export default async function DashboardPage({
   const unsyncedSince = new Date(Date.now() - 5 * 60 * 1000);
   const startOfPrevMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
 
-  const [dueToday, dueTomorrow, due7Days, due1Month, expectedIncome, pendingPages, unsyncedCount] =
+  const [dueToday, dueTomorrow, due7Days, due1Month, expectedIncome, pendingPages, unsyncedCount, unreadDocuments] =
     await Promise.all([
       sumPayables(session.companyId, today, tomorrow),
       // "Amanhã" é só o dia de amanhã (1 dia) — não de amanhã até 7 dias, que
@@ -76,6 +77,18 @@ export default async function DashboardPage({
           createdAt: { lt: unsyncedSince },
           dueDate: { gte: startOfPrevMonth },
         },
+      }),
+      // Arquivos que a IA não conseguiu aproveitar (sem valor/vencimento
+      // legível, ilegível etc.) — antes sumiam em silêncio. Só os dos últimos 14 dias.
+      prisma.document.findMany({
+        where: {
+          companyId: session.companyId,
+          status: "ERROR",
+          uploadedAt: { gte: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000) },
+        },
+        orderBy: { uploadedAt: "desc" },
+        take: 10,
+        select: { id: true, originalFilename: true },
       }),
     ]);
 
@@ -166,6 +179,29 @@ export default async function DashboardPage({
             >
               Ver lançamentos
             </Link>
+          </div>
+        )}
+
+        {unreadDocuments.length > 0 && (
+          <div className="mb-8 bg-red-50 border border-red-200 rounded-lg p-5">
+            <h2 className="text-sm font-semibold mb-1">
+              {unreadDocuments.length === 1
+                ? "1 documento não pôde ser lido"
+                : `${unreadDocuments.length} documentos não puderam ser lidos`}
+            </h2>
+            <p className="text-sm text-neutral-600 mb-3">
+              A IA não achou valor ou vencimento legível neles (ou não conseguiu ler o arquivo), então
+              nada foi lançado. Lance na mão em Lançamento Manual, ou descarte e reenvie uma versão
+              mais nítida.
+            </p>
+            <ul className="space-y-2">
+              {unreadDocuments.map((doc) => (
+                <li key={doc.id} className="flex items-center justify-between text-sm gap-3">
+                  <span className="truncate">{doc.originalFilename}</span>
+                  <DismissDocumentButton documentId={doc.id} label={doc.originalFilename} />
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

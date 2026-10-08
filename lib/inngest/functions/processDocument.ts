@@ -51,6 +51,7 @@ export const processDocument = inngest.createFunction(
     }
 
     let anyAwaitingInput = false;
+    let unreadablePages = 0;
 
     for (const page of extractedPages) {
       // Só cria os registros no banco (DocumentPage + Transaction) — a
@@ -74,7 +75,24 @@ export const processDocument = inngest.createFunction(
               status: "DONE",
             },
           });
-          return { needsInput: false, transactionIds: [] as string[] };
+          return { needsInput: false, unreadable: false, transactionIds: [] as string[] };
+        }
+
+        // A IA leu a página mas não achou NENHUMA parcela (nem valor, nem
+        // vencimento — acontece com nota sem data legível). Sem isso a página
+        // virava "feita" sem criar lançamento e sem perguntar nada: a nota
+        // sumia em silêncio. Registra como erro, que aparece no painel.
+        if (page.installments.length === 0) {
+          await prisma.documentPage.create({
+            data: {
+              documentId: document.id,
+              pageNumber: page.pageNumber,
+              rawExtraction: page as unknown as object,
+              confidence: page.confidence,
+              status: "ERROR",
+            },
+          });
+          return { needsInput: false, unreadable: true, transactionIds: [] as string[] };
         }
 
         const supplier = await resolveSupplier({
@@ -123,7 +141,7 @@ export const processDocument = inngest.createFunction(
               status: "DONE",
             },
           });
-          return { needsInput: false, transactionIds: [] as string[] };
+          return { needsInput: false, unreadable: false, transactionIds: [] as string[] };
         }
 
         // Data suspeita (regras de brDate.ts) ou nota já lançada com outra
@@ -155,7 +173,7 @@ export const processDocument = inngest.createFunction(
         });
 
         if (needsInput) {
-          return { needsInput: true, transactionIds: [] as string[] };
+          return { needsInput: true, unreadable: false, transactionIds: [] as string[] };
         }
 
         // Fornecedor já conhecido: lança automático, sem perguntar de novo.
@@ -206,9 +224,13 @@ export const processDocument = inngest.createFunction(
           });
           transactionIds.push(transaction.id);
         }
-        return { needsInput: false, transactionIds };
+        return { needsInput: false, unreadable: false, transactionIds };
       });
 
+      if (result.unreadable) {
+        unreadablePages++;
+        continue;
+      }
       if (result.needsInput) {
         anyAwaitingInput = true;
         continue;
@@ -221,16 +243,21 @@ export const processDocument = inngest.createFunction(
       }
     }
 
+    // Nenhuma página aproveitável (a IA não devolveu nada legível, ou só
+    // páginas sem valor/vencimento): o documento fica como ERRO — que aparece
+    // no painel — em vez de "feito" sem ter lançado nem perguntado nada.
+    const nothingUsable = extractedPages.length === 0 || unreadablePages === extractedPages.length;
+
     await step.run("finalize-document-status", () =>
       prisma.document.update({
         where: { id: documentId },
         data: {
-          status: anyAwaitingInput ? "AWAITING_USER_INPUT" : "DONE",
+          status: nothingUsable ? "ERROR" : anyAwaitingInput ? "AWAITING_USER_INPUT" : "DONE",
           processedAt: new Date(),
         },
       })
     );
 
-    return { pagesProcessed: extractedPages.length, anyAwaitingInput };
+    return { pagesProcessed: extractedPages.length, anyAwaitingInput, nothingUsable };
   }
 );
