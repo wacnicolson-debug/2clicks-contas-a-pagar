@@ -48,7 +48,14 @@ export default async function DashboardPage({
   const in1Month = new Date(today);
   in1Month.setUTCMonth(in1Month.getUTCMonth() + 1);
 
-  const [dueToday, dueTomorrow, due7Days, due1Month, expectedIncome, pendingPages] =
+  // Lançamentos que existem no app mas nunca chegaram na planilha (a conta do
+  // painel e a planilha deixam de bater sem ninguém perceber). Só conta os
+  // criados há mais de 5 min (os recém-criados ainda estão sincronizando) e
+  // com vencimento do mês passado em diante (o histórico antigo não interessa).
+  const unsyncedSince = new Date(Date.now() - 5 * 60 * 1000);
+  const startOfPrevMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
+
+  const [dueToday, dueTomorrow, due7Days, due1Month, expectedIncome, pendingPages, unsyncedCount] =
     await Promise.all([
       sumPayables(session.companyId, today, tomorrow),
       // "Amanhã" é só o dia de amanhã (1 dia) — não de amanhã até 7 dias, que
@@ -61,6 +68,14 @@ export default async function DashboardPage({
         where: { status: "AWAITING_USER_INPUT", document: { companyId: session.companyId } },
         include: { supplier: true, document: true },
         orderBy: { id: "asc" },
+      }),
+      prisma.transaction.count({
+        where: {
+          companyId: session.companyId,
+          sheetCellRef: null,
+          createdAt: { lt: unsyncedSince },
+          dueDate: { gte: startOfPrevMonth },
+        },
       }),
     ]);
 
@@ -130,6 +145,27 @@ export default async function DashboardPage({
                 <RemoveSheetButton id={sheet.id} year={sheet.year} />
               </span>
             ))}
+          </div>
+        )}
+
+        {googleTokenValid !== false && unsyncedCount > 0 && (
+          <div className="mb-8 bg-red-50 border border-red-200 rounded-lg p-5">
+            <h2 className="text-sm font-semibold mb-1">
+              {unsyncedCount === 1
+                ? "1 lançamento não chegou na planilha"
+                : `${unsyncedCount} lançamentos não chegaram na planilha`}
+            </h2>
+            <p className="text-sm text-neutral-600 mb-3">
+              Eles estão no app (e na soma do painel), mas não aparecem na planilha. Em
+              Lançamentos eles ficam marcados com &quot;fora da planilha&quot;; abra um em Editar e use
+              &quot;Reenviar pra planilha&quot; — a mensagem diz o motivo.
+            </p>
+            <Link
+              href="/lancamentos"
+              className="inline-block bg-red-700 text-white rounded-md px-4 py-2 text-sm font-medium"
+            >
+              Ver lançamentos
+            </Link>
           </div>
         )}
 
