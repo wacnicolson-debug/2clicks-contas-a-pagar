@@ -88,8 +88,12 @@ export function locateDayBlocks(
     } else {
       end1 = start1 + ROWS_PER_DAY - 1;
     }
+    // O usuário ajusta o tamanho de cada dia conforme o movimento (ex: de 16 a
+    // 47 linhas na mesma aba), então só descarta o que é claramente absurdo.
+    // Dia sem a fórmula do seguinte já é descartado acima, o que pega o caso
+    // de uma fórmula apagada.
     const length = end1 - start1 + 1;
-    if (length < ROWS_PER_DAY - 10 || length > ROWS_PER_DAY + 15) continue;
+    if (length < 1 || length > 150) continue;
     located.set(day, { start1, end1 });
   }
   return located;
