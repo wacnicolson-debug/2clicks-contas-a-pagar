@@ -165,14 +165,19 @@ async function growFullBlocks(
   year: number
 ): Promise<void> {
   const now = new Date();
-  if (year !== now.getUTCFullYear()) return;
+  const isCurrentYear = year === now.getUTCFullYear();
+  // Ano seguinte (ex: 2027) também: lançamentos já vêm com vencimento lá.
+  if (!isCurrentYear && year !== now.getUTCFullYear() + 1) return;
   const last = lastGrow.get(spreadsheetId);
-  if (last && Date.now() - last < GROW_INTERVAL_MS) return;
+  if (last && Date.now() - last < (isCurrentYear ? GROW_INTERVAL_MS : GROW_INTERVAL_MS * 3)) return;
   lastGrow.set(spreadsheetId, Date.now());
 
-  const tabs = [now.getUTCMonth() - 1, now.getUTCMonth(), now.getUTCMonth() + 1]
-    .filter((m) => m >= 0 && m <= 11)
-    .map((m) => MONTHS[m]);
+  // Ano atual: mês anterior, atual e seguinte. Ano seguinte: todos os meses.
+  const tabs = isCurrentYear
+    ? [now.getUTCMonth() - 1, now.getUTCMonth(), now.getUTCMonth() + 1]
+        .filter((m) => m >= 0 && m <= 11)
+        .map((m) => MONTHS[m])
+    : [...MONTHS];
   const res = await sheets.spreadsheets.values.batchGet({
     spreadsheetId,
     ranges: tabs.map((t) => `'${t}'!A2:Z${SCAN_LAST_ROW}`),
