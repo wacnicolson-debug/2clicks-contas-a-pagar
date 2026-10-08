@@ -3,11 +3,16 @@ import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { MONTHS } from "./provisionCompanySheet";
 import {
+  FIRST_DATA_ROW,
+  SCAN_LAST_ROW,
   cellToNumber,
   columnLetter,
   findDayColumnOffset,
   findExcluirColumn,
+  readDayTabState,
+  rowHasData,
   rowMatchesTransaction,
+  validDay,
 } from "./dayBlockLayout";
 import { rebuildDayBlock } from "./syncTransaction";
 import { deleteTransactionEverywhere } from "@/lib/transactions/deleteTransaction";
@@ -100,10 +105,49 @@ async function ensureExcluirColumn(
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
 }
 
-/** Dia do mês dono da linha (1-based) nos blocos de 30 linhas, ou null se está fora dos blocos. */
-export function dayOfSheetRow(row1: number): number | null {
-  if (row1 <= HEADER_ROWS || row1 > LAST_BLOCK_ROW1) return null;
-  return Math.floor((row1 - HEADER_ROWS - 1) / ROWS_PER_DAY) + 1;
+const HEAL_INTERVAL_MS = 30 * 60 * 1000;
+const lastHeal = new Map<string, number>();
+
+/**
+ * Realinha, no mês atual e no seguinte, lançamentos que ficaram em linhas
+ * fora do bloco do dia deles — gravados antes de o app passar a seguir a
+ * estrutura da planilha, quando linhas inseridas/apagadas à mão deixavam o
+ * lançamento escondido no agrupamento de outro dia. Confere no máximo a cada
+ * 30 min por planilha; só regrava o que está fora de lugar (a regravação do
+ * dia leva junto os dias vizinhos que se tocam).
+ */
+async function healMisalignedBlocks(
+  sheets: sheets_v4.Sheets,
+  companyId: string,
+  companySheet: { spreadsheetId: string; year: number }
+): Promise<void> {
+  const now = new Date();
+  if (companySheet.year !== now.getUTCFullYear()) return;
+  const last = lastHeal.get(companySheet.spreadsheetId);
+  if (last && Date.now() - last < HEAL_INTERVAL_MS) return;
+  lastHeal.set(companySheet.spreadsheetId, Date.now());
+
+  for (const monthIndex0 of [now.getUTCMonth(), now.getUTCMonth() + 1]) {
+    if (monthIndex0 > 11) continue;
+    const tab = MONTHS[monthIndex0];
+    try {
+      const state = await readDayTabState({ sheets, spreadsheetId: companySheet.spreadsheetId, tabName: tab });
+      const supplierCol = state.offset + 2;
+      const staleDays = new Set<number>();
+      state.body.forEach((row, i) => {
+        const day = validDay(row?.[state.offset]);
+        if (day === null || !rowHasData(row, supplierCol)) return;
+        const block = state.located.get(day);
+        const row1 = FIRST_DATA_ROW + i;
+        if (block && (row1 < block.start1 || row1 > block.end1)) staleDays.add(day);
+      });
+      for (const day of staleDays) {
+        await rebuildDayBlock(companyId, companySheet.year, tab, day);
+      }
+    } catch (err) {
+      console.error(`Falha ao realinhar os blocos de ${tab}/${companySheet.year}:`, err);
+    }
+  }
 }
 
 /**
@@ -138,6 +182,8 @@ export async function processSheetDeletions(
 
     for (const companySheet of company.sheets) {
       const spreadsheetId = companySheet.spreadsheetId;
+
+      await healMisalignedBlocks(sheets, companyId, companySheet);
 
       // 1) Cabeçalho (linha 2) das 12 abas — acha onde está a coluna EXCLUIR de cada uma.
       // 2) Só as caixinhas dessa coluna, nas abas que têm ela.
@@ -178,7 +224,7 @@ export async function processSheetDeletions(
           spreadsheetId,
           ranges: withColumn.map(
             ({ tab, index }) =>
-              `'${tab}'!${columnLetter(index)}${HEADER_ROWS + 1}:${columnLetter(index)}${LAST_BLOCK_ROW1}`
+              `'${tab}'!${columnLetter(index)}${HEADER_ROWS + 1}:${columnLetter(index)}${SCAN_LAST_ROW}`
           ),
           majorDimension: "COLUMNS",
           valueRenderOption: "UNFORMATTED_VALUE",
@@ -208,7 +254,9 @@ export async function processSheetDeletions(
         const offset = findDayColumnOffset(headerByTab.get(f.tab));
         const supplierName = String(row[offset + 2] ?? "").trim();
         const amount = cellToNumber(row[offset + 6]);
-        const day = dayOfSheetRow(f.row1);
+        // O dia vem da própria linha (coluna Dia), não da posição dela — a
+        // planilha pode ter linhas inseridas/apagadas entre os dias.
+        const day = validDay(row[offset]);
         if (!supplierName || amount === null) continue; // linha vazia marcada: nada a apagar
         if (day === null) {
           unmatched++;

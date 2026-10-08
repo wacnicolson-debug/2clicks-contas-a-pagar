@@ -6,13 +6,17 @@ import { toBRDateString } from "@/lib/utils/formatDateBR";
 import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
 import {
   APP_COLUMN_COUNT,
+  FIRST_DATA_ROW,
+  blockForDay,
   columnLetter,
   findExcluirColumn,
-  readDayBlockLayout,
+  planBlockRewrite,
+  readDayTabState,
+  rowHasData,
   rowMatchesTransaction,
+  validDay,
 } from "./dayBlockLayout";
 
-const ROWS_PER_DAY = 30;
 const HEADER_ROWS = 2; // título + cabeçalho, 0-based -> primeira linha de dado = índice 2
 
 const PAYMENT_METHOD_LABEL: Record<string, string> = {
@@ -201,14 +205,40 @@ export async function rebuildDayBlock(
   if (!companySheet) return;
 
   const monthIndex0 = MONTHS.indexOf(monthName);
-  const startOfDay = new Date(Date.UTC(year, monthIndex0, day));
-  const startOfNextDay = new Date(Date.UTC(year, monthIndex0, day + 1));
+  const { sheets } = getGoogleClientsForCompany(company.googleRefreshToken);
+  const spreadsheetId = companySheet.spreadsheetId;
+
+  // O bloco de cada dia é o que a PLANILHA tem hoje (achado pela linha do
+  // "Total do dia"), não "30 linhas por dia": linhas inseridas ou apagadas à
+  // mão entre os dias desalinhavam tudo, e o lançamento caía em linha escondida
+  // no grupo de outro dia. A coluna "Dia" também pode não ser mais a A.
+  const { header, body, offset, located } = await readDayTabState({
+    sheets,
+    spreadsheetId,
+    tabName: monthName,
+  });
+  const supplierCol = offset + 2;
+
+  // Linhas gravadas pela conta antiga podem estar fora do bloco atual do dia:
+  // os dias que se tocam são regravados juntos, numa escrita só, pra não
+  // apagar lançamento de um dia ao gravar o vizinho.
+  const plan = planBlockRewrite({ body, diaCol: offset, supplierCol, located, day });
+  if (plan.conflict) {
+    throw new Error(
+      `A aba ${monthName} tem blocos de dias que se sobrepõem (${plan.conflict}) — o app não grava pra não apagar lançamentos. Confira se cada dia tem a sua fórmula de "Total do dia" na primeira linha do bloco.`
+    );
+  }
 
   const candidates = await prisma.transaction.findMany({
     where: {
       companyId,
       kind: "PAYABLE",
-      dueDate: { gte: startOfDay, lt: startOfNextDay },
+      OR: plan.days.map((d) => ({
+        dueDate: {
+          gte: new Date(Date.UTC(year, monthIndex0, d)),
+          lt: new Date(Date.UTC(year, monthIndex0, d + 1)),
+        },
+      })),
       ...(options?.excludeTransactionId ? { id: { not: options.excludeTransactionId } } : {}),
     },
     include: { supplier: true, category: true },
@@ -219,84 +249,96 @@ export async function rebuildDayBlock(
   // "Custos Pagos".
   const startOfToday = new Date();
   startOfToday.setUTCHours(0, 0, 0, 0);
-  const blockTransactions = candidates
-    .filter((t) => !(t.paid && t.dueDate >= startOfToday))
-    .sort((a, b) => Number(a.amount) - Number(b.amount));
-
-  if (blockTransactions.length > ROWS_PER_DAY) {
-    throw new Error(
-      `Mais de ${ROWS_PER_DAY} lançamentos no dia ${day} de ${monthName}/${year} — as linhas reservadas não são suficientes.`
-    );
+  const byDay = new Map<number, typeof candidates>();
+  for (const t of candidates) {
+    if (t.paid && t.dueDate >= startOfToday) continue;
+    const d = t.dueDate.getUTCDate();
+    byDay.set(d, [...(byDay.get(d) ?? []), t]);
   }
 
-  const { sheets } = getGoogleClientsForCompany(company.googleRefreshToken);
-  const spreadsheetId = companySheet.spreadsheetId;
-  const blockStart1 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY + 1;
-  const blockEnd1 = blockStart1 + ROWS_PER_DAY - 1;
-
-  // A coluna "Dia" pode não ser mais a A (usuário inseriu coluna(s) antes).
-  const { offset, rows: oldRows, header } = await readDayBlockLayout({
-    sheets,
-    spreadsheetId,
-    tabName: monthName,
-    blockStart1,
-    blockEnd1,
-  });
   // Coluna EXCLUIR (marcação pra apagar o lançamento): também presa à linha,
   // então precisa acompanhar o lançamento no reordenamento — senão a marcação
   // de um passaria pro que ocupasse a linha dele e o apagaria por engano.
   const excluirIndex = findExcluirColumn(header);
 
-  // As caixinhas PAGO/CONFERIDO (colunas L/M) são marcação manual, presa à
-  // LINHA — mas essa função reordena o bloco por valor a cada mudança (novo
-  // lançamento, edição, exclusão). Sem isso, a marcação de um lançamento
-  // antigo "vazava" pro lançamento que passasse a ocupar a linha dele depois
-  // do reordenamento. Por isso: acha a linha antiga de cada lançamento (por
-  // fornecedor+valor, mesmo casamento usado pra reenviar/apagar) e leva a
-  // marcação junto pra a posição nova; lançamento sem linha antiga (novo)
-  // nasce desmarcado.
-  const consumedOldRowIndexes = new Set<number>();
-  const checkboxRows: boolean[][] = [];
-  const excluirRows: boolean[][] = [];
-  for (const t of blockTransactions) {
-    const amount = Number(t.amount);
-    const matchIndex = oldRows.findIndex(
-      (row, i) => !consumedOldRowIndexes.has(i) && rowMatchesTransaction(row, t.supplier.name, amount)
-    );
-    if (matchIndex < 0) {
+  const dataRanges: { range: string; values: (string | number | boolean)[][] }[] = [];
+  const refUpdates: { id: string; ref: string }[] = [];
+
+  for (const d of plan.days) {
+    const block = plan.blocks.get(d)!;
+    const capacity = block.end1 - block.start1 + 1;
+    const blockTransactions = (byDay.get(d) ?? []).sort((a, b) => Number(a.amount) - Number(b.amount));
+
+    if (blockTransactions.length > capacity) {
+      throw new Error(
+        `Mais de ${capacity} lançamentos no dia ${d} de ${monthName}/${year} — o bloco desse dia na planilha só tem ${capacity} linhas.`
+      );
+    }
+
+    // Linhas antigas do dia: as do bloco + as soltas fora dele (gravadas pela
+    // conta antiga) — de onde as marcações PAGO/CONFERIDO/EXCLUIR são levadas.
+    const oldRows: unknown[][] = [];
+    for (let r = block.start1; r <= block.end1; r++) oldRows.push(body[r - FIRST_DATA_ROW] ?? []);
+    body.forEach((row, i) => {
+      const r = FIRST_DATA_ROW + i;
+      if (r >= block.start1 && r <= block.end1) return;
+      if (rowHasData(row, supplierCol) && validDay(row?.[offset]) === d) oldRows.push(row);
+    });
+
+    // As caixinhas PAGO/CONFERIDO (colunas L/M) são marcação manual, presa à
+    // LINHA — mas esta função reordena o bloco por valor a cada mudança (novo
+    // lançamento, edição, exclusão). Sem isso, a marcação de um lançamento
+    // antigo "vazava" pro lançamento que passasse a ocupar a linha dele depois
+    // do reordenamento. Por isso: acha a linha antiga de cada lançamento (por
+    // fornecedor+valor, mesmo casamento usado pra reenviar/apagar) e leva a
+    // marcação junto pra a posição nova; lançamento sem linha antiga (novo)
+    // nasce desmarcado.
+    const consumed = new Set<number>();
+    const checkboxRows: boolean[][] = [];
+    const excluirRows: boolean[][] = [];
+    for (const t of blockTransactions) {
+      const amount = Number(t.amount);
+      const matchIndex = oldRows.findIndex(
+        (row, i) => !consumed.has(i) && rowMatchesTransaction(row, t.supplier.name, amount)
+      );
+      if (matchIndex < 0) {
+        checkboxRows.push([false, false]);
+        excluirRows.push([false]);
+        continue;
+      }
+      consumed.add(matchIndex);
+      const row = oldRows[matchIndex];
+      checkboxRows.push([row[11] === true, row[12] === true]);
+      excluirRows.push([excluirIndex !== null && row[excluirIndex] === true]);
+    }
+
+    const blockRows: (string | number)[][] = blockTransactions.map((t) => {
+      const tCostDate = t.noteDate ?? t.dueDate;
+      const tCostMonthDiffers =
+        tCostDate.getUTCFullYear() !== t.dueDate.getUTCFullYear() ||
+        tCostDate.getUTCMonth() !== t.dueDate.getUTCMonth();
+      return buildDayRowValues(t, tCostMonthDiffers);
+    });
+    while (blockRows.length < capacity) {
+      blockRows.push([d, "", "", "", "", "", "", "", ""]);
       checkboxRows.push([false, false]);
       excluirRows.push([false]);
-      continue;
     }
-    consumedOldRowIndexes.add(matchIndex);
-    const row = oldRows[matchIndex];
-    checkboxRows.push([row[11] === true, row[12] === true]);
-    excluirRows.push([excluirIndex !== null && row[excluirIndex] === true]);
-  }
 
-  const blockRows: (string | number)[][] = blockTransactions.map((t) => {
-    const tCostDate = t.noteDate ?? t.dueDate;
-    const tCostMonthDiffers =
-      tCostDate.getUTCFullYear() !== t.dueDate.getUTCFullYear() ||
-      tCostDate.getUTCMonth() !== t.dueDate.getUTCMonth();
-    return buildDayRowValues(t, tCostMonthDiffers);
-  });
-  while (blockRows.length < ROWS_PER_DAY) {
-    blockRows.push([day, "", "", "", "", "", "", "", ""]);
-    checkboxRows.push([false, false]);
-    excluirRows.push([false]);
-  }
-
-  const dataRanges = [
-    {
-      range: `'${monthName}'!${columnLetter(offset)}${blockStart1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${blockEnd1}`,
-      values: blockRows,
-    },
-    { range: `'${monthName}'!L${blockStart1}:M${blockEnd1}`, values: checkboxRows },
-  ];
-  if (excluirIndex !== null) {
-    const col = columnLetter(excluirIndex);
-    dataRanges.push({ range: `'${monthName}'!${col}${blockStart1}:${col}${blockEnd1}`, values: excluirRows });
+    dataRanges.push(
+      {
+        range: `'${monthName}'!${columnLetter(offset)}${block.start1}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${block.end1}`,
+        values: blockRows,
+      },
+      { range: `'${monthName}'!L${block.start1}:M${block.end1}`, values: checkboxRows }
+    );
+    if (excluirIndex !== null) {
+      const col = columnLetter(excluirIndex);
+      dataRanges.push({ range: `'${monthName}'!${col}${block.start1}:${col}${block.end1}`, values: excluirRows });
+    }
+    blockTransactions.forEach((t, index) => {
+      refUpdates.push({ id: t.id, ref: `${monthName}!A${block.start1 + index}` });
+    });
   }
 
   await sheets.spreadsheets.values.batchUpdate({
@@ -307,12 +349,15 @@ export async function rebuildDayBlock(
     },
   });
 
-  for (const [index, t] of blockTransactions.entries()) {
-    const row1 = blockStart1 + index;
-    await prisma.transaction.update({
-      where: { id: t.id },
-      data: { sheetSyncStatus: "SYNCED", sheetCellRef: `${monthName}!A${row1}` },
-    });
+  for (let i = 0; i < refUpdates.length; i += 25) {
+    await Promise.all(
+      refUpdates.slice(i, i + 25).map((u) =>
+        prisma.transaction.update({
+          where: { id: u.id },
+          data: { sheetSyncStatus: "SYNCED", sheetCellRef: u.ref },
+        })
+      )
+    );
   }
 }
 
@@ -482,16 +527,10 @@ export async function resyncTransactionToSheet(transactionId: string): Promise<R
     } else {
       const day = t.dueDate.getUTCDate();
       tab = MONTHS[t.dueDate.getUTCMonth()];
-      firstRow1 = HEADER_ROWS + (day - 1) * ROWS_PER_DAY + 1;
-      rows = (
-        await readDayBlockLayout({
-          sheets,
-          spreadsheetId,
-          tabName: tab,
-          blockStart1: firstRow1,
-          blockEnd1: firstRow1 + ROWS_PER_DAY - 1,
-        })
-      ).rows;
+      const state = await readDayTabState({ sheets, spreadsheetId, tabName: tab });
+      const block = blockForDay(day, state.located);
+      firstRow1 = block.start1;
+      rows = state.body.slice(block.start1 - FIRST_DATA_ROW, block.end1 - FIRST_DATA_ROW + 1);
     }
 
     const matches = rows
