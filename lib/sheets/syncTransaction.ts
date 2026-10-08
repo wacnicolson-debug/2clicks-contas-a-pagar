@@ -8,6 +8,7 @@ import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
 import {
   APP_COLUMN_COUNT,
   FIRST_DATA_ROW,
+  SCAN_LAST_ROW,
   blockForDay,
   columnLetter,
   findDayColumnOffset,
@@ -294,6 +295,21 @@ export async function rebuildDayBlock(
   const dataRanges: { range: string; values: (string | number | boolean)[][] }[] = [];
   const refUpdates: { id: string; ref: string }[] = [];
 
+  // Cor de fundo FIXA da linha (ex: o amarelo pintado à mão de uma conta paga)
+  // fica presa à POSIÇÃO, não ao lançamento — como o bloco reordena por valor,
+  // um lançamento novo (ou editado) caía numa linha que já estava pintada e
+  // "chegava só com a cor". Aqui a cor acompanha o lançamento: quem tinha cor
+  // leva pra posição nova, quem é novo nasce sem cor. A cor das caixinhas
+  // (formatação condicional) não é afetada — ela já segue a marcação.
+  let fillInfo: Awaited<ReturnType<typeof readRowFills>> | null = null;
+  try {
+    fillInfo = await readRowFills(sheets, spreadsheetId, monthName, supplierCol);
+  } catch (err) {
+    console.error(`Não consegui ler as cores das linhas de ${monthName} (segue sem mexer nelas):`, err);
+  }
+  const fillEndCol = Math.max(20, (excluirIndex ?? 0) + 1, (conciliadoIndex ?? 0) + 1);
+  const formatRequests: sheets_v4.Schema$Request[] = [];
+
   for (const d of plan.days) {
     const block = plan.blocks.get(d)!;
     const capacity = block.end1 - block.start1 + 1;
@@ -308,11 +324,18 @@ export async function rebuildDayBlock(
     // Linhas antigas do dia: as do bloco + as soltas fora dele (gravadas pela
     // conta antiga) — de onde as marcações PAGO/CONFERIDO/EXCLUIR são levadas.
     const oldRows: unknown[][] = [];
-    for (let r = block.start1; r <= block.end1; r++) oldRows.push(body[r - FIRST_DATA_ROW] ?? []);
+    const oldRowNumbers: number[] = [];
+    for (let r = block.start1; r <= block.end1; r++) {
+      oldRows.push(body[r - FIRST_DATA_ROW] ?? []);
+      oldRowNumbers.push(r);
+    }
     body.forEach((row, i) => {
       const r = FIRST_DATA_ROW + i;
       if (r >= block.start1 && r <= block.end1) return;
-      if (rowHasData(row, supplierCol) && validDay(row?.[offset]) === d) oldRows.push(row);
+      if (rowHasData(row, supplierCol) && validDay(row?.[offset]) === d) {
+        oldRows.push(row);
+        oldRowNumbers.push(r);
+      }
     });
 
     // As caixinhas PAGO/CONFERIDO (colunas L/M) são marcação manual, presa à
@@ -327,6 +350,7 @@ export async function rebuildDayBlock(
     const checkboxRows: boolean[][] = [];
     const excluirRows: boolean[][] = [];
     const conciliadoRows: boolean[][] = [];
+    const carriedFills: (sheets_v4.Schema$Color | null)[] = [];
     for (const t of blockTransactions) {
       const amount = Number(t.amount);
       const matchIndex = oldRows.findIndex(
@@ -336,9 +360,11 @@ export async function rebuildDayBlock(
         checkboxRows.push([false, false]);
         excluirRows.push([false]);
         conciliadoRows.push([false]);
+        carriedFills.push(null);
         continue;
       }
       consumed.add(matchIndex);
+      carriedFills.push(fillInfo?.fills.get(oldRowNumbers[matchIndex]) ?? null);
       const row = oldRows[matchIndex];
       checkboxRows.push([row[11] === true, row[12] === true]);
       excluirRows.push([excluirIndex !== null && row[excluirIndex] === true]);
@@ -377,6 +403,32 @@ export async function rebuildDayBlock(
     blockTransactions.forEach((t, index) => {
       refUpdates.push({ id: t.id, ref: `${monthName}!A${block.start1 + index}` });
     });
+
+    // Cor de cada linha do bloco: a do lançamento que ocupa a linha (se tinha),
+    // sem cor pro que é novo e pras linhas em branco. Linhas seguidas com a
+    // mesma cor viram um pedido só.
+    if (fillInfo) {
+      const colorAt = (i: number) => (i < blockTransactions.length ? carriedFills[i] : null);
+      let runStart = 0;
+      for (let i = 1; i <= capacity; i++) {
+        if (i < capacity && JSON.stringify(colorAt(i)) === JSON.stringify(colorAt(runStart))) continue;
+        const color = colorAt(runStart);
+        formatRequests.push({
+          repeatCell: {
+            range: {
+              sheetId: fillInfo.sheetId,
+              startRowIndex: block.start1 - 1 + runStart,
+              endRowIndex: block.start1 - 1 + i,
+              startColumnIndex: 0,
+              endColumnIndex: fillEndCol,
+            },
+            cell: { userEnteredFormat: color ? { backgroundColor: color } : {} },
+            fields: "userEnteredFormat.backgroundColor",
+          },
+        });
+        runStart = i;
+      }
+    }
   }
 
   await sheets.spreadsheets.values.batchUpdate({
@@ -386,6 +438,14 @@ export async function rebuildDayBlock(
       data: dataRanges,
     },
   });
+
+  if (formatRequests.length > 0) {
+    try {
+      await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: formatRequests } });
+    } catch (err) {
+      console.error(`Não consegui acertar as cores das linhas de ${monthName}:`, err);
+    }
+  }
 
   for (let i = 0; i < refUpdates.length; i += 25) {
     await Promise.all(
@@ -397,6 +457,39 @@ export async function rebuildDayBlock(
       )
     );
   }
+}
+
+/**
+ * Cor de fundo FIXA (não a da formatação condicional) de cada linha de dados
+ * da aba, lida de uma coluna só. Linha sem cor própria não aparece no mapa.
+ */
+async function readRowFills(
+  sheets: sheets_v4.Sheets,
+  spreadsheetId: string,
+  tabName: string,
+  column: number
+): Promise<{ sheetId: number; fills: Map<number, sheets_v4.Schema$Color> }> {
+  const letter = columnLetter(column);
+  const res = await sheets.spreadsheets.get({
+    spreadsheetId,
+    ranges: [`'${tabName}'!${letter}${FIRST_DATA_ROW}:${letter}${SCAN_LAST_ROW}`],
+    includeGridData: true,
+    fields: "sheets(properties(sheetId),data(startRow,rowData(values(userEnteredFormat(backgroundColor)))))",
+  });
+  const sheet = res.data.sheets?.[0];
+  const sheetId = sheet?.properties?.sheetId;
+  if (sheetId == null) throw new Error(`Aba ${tabName} não encontrada pra ler as cores.`);
+
+  const data = sheet?.data?.[0];
+  const startRow0 = data?.startRow ?? FIRST_DATA_ROW - 1;
+  const fills = new Map<number, sheets_v4.Schema$Color>();
+  (data?.rowData ?? []).forEach((rowData, i) => {
+    const color = rowData.values?.[0]?.userEnteredFormat?.backgroundColor;
+    if (color && (color.red != null || color.green != null || color.blue != null)) {
+      fills.set(startRow0 + i + 1, color);
+    }
+  });
+  return { sheetId, fills };
 }
 
 /**
