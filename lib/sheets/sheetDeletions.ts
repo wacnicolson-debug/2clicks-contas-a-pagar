@@ -10,6 +10,7 @@ import {
   findDayColumnOffset,
   findExcluirColumn,
   findHeaderColumn,
+  locateDayBlocks,
   readDayTabState,
   rowHasData,
   rowMatchesTransaction,
@@ -143,6 +144,134 @@ async function ensureCheckboxColumn(
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
 }
 
+// Linhas livres que cada dia mantém sobrando: o app abre mais quando o usuário
+// vai preenchendo (ex: conciliação com o extrato, lançando à mão linha a linha).
+const SPARE_ROWS = 3;
+const GROW_INTERVAL_MS = 20 * 1000;
+const MAX_BLOCK_ROWS = 120;
+const lastGrow = new Map<string, number>();
+const sheetIdCache = new Map<string, number>();
+
+/**
+ * Mantém sempre algumas linhas livres em cada dia do mês anterior, atual e
+ * seguinte: se um dia ficou cheio (todas as linhas com fornecedor), abre mais
+ * linhas DENTRO do bloco dele (antes da última), do mesmo jeito que o usuário
+ * faria à mão. Não escreve em nenhum lançamento — só insere linhas em branco
+ * (sem cor própria) com o número do dia na coluna Dia.
+ */
+async function growFullBlocks(
+  sheets: sheets_v4.Sheets,
+  spreadsheetId: string,
+  year: number
+): Promise<void> {
+  const now = new Date();
+  if (year !== now.getUTCFullYear()) return;
+  const last = lastGrow.get(spreadsheetId);
+  if (last && Date.now() - last < GROW_INTERVAL_MS) return;
+  lastGrow.set(spreadsheetId, Date.now());
+
+  const tabs = [now.getUTCMonth() - 1, now.getUTCMonth(), now.getUTCMonth() + 1]
+    .filter((m) => m >= 0 && m <= 11)
+    .map((m) => MONTHS[m]);
+  const res = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId,
+    ranges: tabs.map((t) => `'${t}'!A2:Z${SCAN_LAST_ROW}`),
+    valueRenderOption: "FORMULA",
+    dateTimeRenderOption: "FORMATTED_STRING",
+  });
+
+  type Plan = { tab: string; offset: number; fillEndCol: number; items: { day: number; end1: number; count: number }[] };
+  const plans: Plan[] = [];
+  tabs.forEach((tab, i) => {
+    const values = (res.data.valueRanges?.[i]?.values ?? []) as unknown[][];
+    const header = values[0] ?? [];
+    const body = values.slice(1);
+    const offset = findDayColumnOffset(header);
+    const totalCol = findHeaderColumn(header, "total do dia");
+    const located = locateDayBlocks(body, offset, totalCol);
+    const supplierCol = offset + 2;
+    const items: Plan["items"] = [];
+    for (const [day, block] of located) {
+      const size = block.end1 - block.start1 + 1;
+      if (size >= MAX_BLOCK_ROWS) continue;
+      let free = 0;
+      for (let r = block.start1; r <= block.end1; r++) {
+        if (!rowHasData(body[r - FIRST_DATA_ROW], supplierCol)) free++;
+      }
+      // Dia sem nenhum lançamento fica como está (só cresce quem está em uso).
+      if (free >= SPARE_ROWS || free === size) continue;
+      items.push({ day, end1: block.end1, count: SPARE_ROWS - free });
+    }
+    if (items.length === 0) return;
+    const excluir = findExcluirColumn(header);
+    const conciliado = findHeaderColumn(header, "conciliado");
+    plans.push({
+      tab,
+      offset,
+      fillEndCol: Math.max(20, (excluir ?? 0) + 1, (conciliado ?? 0) + 1),
+      items: items.sort((a, b) => b.end1 - a.end1), // de baixo pra cima
+    });
+  });
+  if (plans.length === 0) return;
+
+  const missingId = tabs.some((t) => plans.some((p) => p.tab === t) && !sheetIdCache.has(`${spreadsheetId}:${t}`));
+  if (missingId) {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties(sheetId,title)",
+    });
+    for (const s of meta.data.sheets ?? []) {
+      if (s.properties?.title && s.properties.sheetId != null) {
+        sheetIdCache.set(`${spreadsheetId}:${s.properties.title}`, s.properties.sheetId);
+      }
+    }
+  }
+
+  for (const plan of plans) {
+    const sheetId = sheetIdCache.get(`${spreadsheetId}:${plan.tab}`);
+    if (sheetId == null) continue;
+    const requests: sheets_v4.Schema$Request[] = [];
+    for (const item of plan.items) {
+      const start = item.end1 - 1; // índice (base 0) da última linha do bloco: insere antes dela
+      requests.push({
+        insertDimension: {
+          range: { sheetId, dimension: "ROWS", startIndex: start, endIndex: start + item.count },
+          inheritFromBefore: true,
+        },
+      });
+      // A linha nova herda o formato da de cima, inclusive a cor pintada à mão
+      // (ex: amarelo) — limpa pra ela nascer sem cor.
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId,
+            startRowIndex: start,
+            endRowIndex: start + item.count,
+            startColumnIndex: 0,
+            endColumnIndex: plan.fillEndCol,
+          },
+          cell: { userEnteredFormat: {} },
+          fields: "userEnteredFormat.backgroundColor",
+        },
+      });
+    }
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
+
+    // Número do dia nas linhas novas (como nas demais linhas do bloco). Como as
+    // inserções foram de baixo pra cima, as posições dos blocos acima não mudaram.
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: plan.items.map((item) => ({
+          range: `'${plan.tab}'!${columnLetter(plan.offset)}${item.end1}:${columnLetter(plan.offset)}${item.end1 + item.count - 1}`,
+          values: Array.from({ length: item.count }, () => [item.day]),
+        })),
+      },
+    });
+  }
+}
+
 const HEADER_CACHE_MS = 2 * 60 * 1000;
 const headerCache = new Map<string, { at: number; byTab: Map<string, unknown[]> }>();
 
@@ -250,6 +379,12 @@ export async function processSheetDeletions(
 
     for (const companySheet of company.sheets) {
       const spreadsheetId = companySheet.spreadsheetId;
+
+      try {
+        await growFullBlocks(sheets, spreadsheetId, companySheet.year);
+      } catch (err) {
+        console.error(`Falha ao abrir linhas nos dias cheios (planilha ${companySheet.year}):`, err);
+      }
 
       // 1) Cabeçalho (linha 2) das 12 abas — acha onde está a coluna EXCLUIR de
       //    cada uma. Fica guardado em memória por 2 min: a conferência roda a
