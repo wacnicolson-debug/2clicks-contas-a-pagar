@@ -9,6 +9,7 @@ import {
   columnLetter,
   findDayColumnOffset,
   findExcluirColumn,
+  findHeaderColumn,
   readDayTabState,
   rowHasData,
   rowMatchesTransaction,
@@ -30,23 +31,32 @@ const running = new Set<string>();
 // longe de PAGO/CONFERIDO pra não marcar sem querer). Depois de criada, o
 // usuário pode mover — o app sempre acha pelo cabeçalho.
 const DEFAULT_EXCLUIR_COLUMN = 19;
+// CONCILIADO (conciliação bancária) nasce logo depois de PAGO (L) e CONFERIDO (M).
+const DEFAULT_CONCILIADO_COLUMN = 13;
 const PROVISION_RETRY_MS = 10 * 60 * 1000;
 const provisionAttempts = new Map<string, number>();
 
 /**
- * Cria a coluna EXCLUIR (cabeçalho na linha 2 + caixinhas até o fim dos
+ * Cria uma coluna de caixinha (cabeçalho na linha 2 + caixinhas até o fim dos
  * blocos de dia) nas abas de mês que ainda não têm. Só é chamada para abas
  * em que a coluna padrão está vazia no cabeçalho, e não apaga nem sobrescreve
  * nada. Se falhar, só tenta de novo depois de alguns minutos.
  */
-async function ensureExcluirColumn(
+async function ensureCheckboxColumn(
   sheets: ReturnType<typeof getGoogleClientsForCompany>["sheets"],
   spreadsheetId: string,
-  tabs: string[]
+  tabs: string[],
+  name: string,
+  columnIndex: number,
+  // Se informada, a linha inteira (de A até esta coluna) muda pra essa cor
+  // quando a caixinha está marcada — regra no topo da lista, então vale por
+  // cima das outras cores (ex: o amarelo do PAGO).
+  highlight?: { red: number; green: number; blue: number }
 ): Promise<void> {
-  const last = provisionAttempts.get(spreadsheetId);
+  const attemptKey = `${spreadsheetId}:${name}`;
+  const last = provisionAttempts.get(attemptKey);
   if (last && Date.now() - last < PROVISION_RETRY_MS) return;
-  provisionAttempts.set(spreadsheetId, Date.now());
+  provisionAttempts.set(attemptKey, Date.now());
 
   const meta = await sheets.spreadsheets.get({
     spreadsheetId,
@@ -60,9 +70,9 @@ async function ensureExcluirColumn(
     const sheetId = props.sheetId;
 
     const columnCount = props.gridProperties?.columnCount ?? 0;
-    if (columnCount <= DEFAULT_EXCLUIR_COLUMN) {
+    if (columnCount <= columnIndex) {
       requests.push({
-        appendDimension: { sheetId, dimension: "COLUMNS", length: DEFAULT_EXCLUIR_COLUMN + 1 - columnCount },
+        appendDimension: { sheetId, dimension: "COLUMNS", length: columnIndex + 1 - columnCount },
       });
     }
     requests.push({
@@ -71,14 +81,14 @@ async function ensureExcluirColumn(
           sheetId,
           startRowIndex: HEADER_ROWS - 1,
           endRowIndex: HEADER_ROWS,
-          startColumnIndex: DEFAULT_EXCLUIR_COLUMN,
-          endColumnIndex: DEFAULT_EXCLUIR_COLUMN + 1,
+          startColumnIndex: columnIndex,
+          endColumnIndex: columnIndex + 1,
         },
         rows: [
           {
             values: [
               {
-                userEnteredValue: { stringValue: "EXCLUIR" },
+                userEnteredValue: { stringValue: name },
                 userEnteredFormat: { textFormat: { bold: true } },
               },
             ],
@@ -93,12 +103,37 @@ async function ensureExcluirColumn(
           sheetId,
           startRowIndex: HEADER_ROWS,
           endRowIndex: LAST_BLOCK_ROW1,
-          startColumnIndex: DEFAULT_EXCLUIR_COLUMN,
-          endColumnIndex: DEFAULT_EXCLUIR_COLUMN + 1,
+          startColumnIndex: columnIndex,
+          endColumnIndex: columnIndex + 1,
         },
         rule: { condition: { type: "BOOLEAN" }, strict: true, showCustomUi: true },
       },
     });
+    if (highlight) {
+      requests.push({
+        addConditionalFormatRule: {
+          rule: {
+            ranges: [
+              {
+                sheetId,
+                startRowIndex: HEADER_ROWS,
+                endRowIndex: LAST_BLOCK_ROW1,
+                startColumnIndex: 0,
+                endColumnIndex: columnIndex + 1,
+              },
+            ],
+            booleanRule: {
+              condition: {
+                type: "CUSTOM_FORMULA",
+                values: [{ userEnteredValue: `=$${columnLetter(columnIndex)}${HEADER_ROWS + 1}=TRUE` }],
+              },
+              format: { backgroundColor: highlight },
+            },
+          },
+          index: 0,
+        },
+      });
+    }
   }
 
   if (requests.length === 0) return;
@@ -213,9 +248,34 @@ export async function processSheetDeletions(
         });
         if (missing.length > 0) {
           try {
-            await ensureExcluirColumn(sheets, spreadsheetId, missing);
+            await ensureCheckboxColumn(sheets, spreadsheetId, missing, "EXCLUIR", DEFAULT_EXCLUIR_COLUMN);
           } catch (err) {
             console.error(`Falha ao criar a coluna EXCLUIR (planilha ${companySheet.year}):`, err);
+          }
+        }
+
+        // CONCILIADO (conciliação bancária): caixinha ao lado de CONFERIDO que
+        // pinta a linha de verde. Mesmo critério: só cria onde não existe e a
+        // posição padrão está livre.
+        const missingConciliado = MONTHS.filter((tab) => {
+          const header = headerByTab.get(tab) ?? [];
+          return (
+            findHeaderColumn(header, "conciliado") === null &&
+            String(header[DEFAULT_CONCILIADO_COLUMN] ?? "").trim() === ""
+          );
+        });
+        if (missingConciliado.length > 0) {
+          try {
+            await ensureCheckboxColumn(
+              sheets,
+              spreadsheetId,
+              missingConciliado,
+              "CONCILIADO",
+              DEFAULT_CONCILIADO_COLUMN,
+              { red: 0.78, green: 0.92, blue: 0.78 }
+            );
+          } catch (err) {
+            console.error(`Falha ao criar a coluna CONCILIADO (planilha ${companySheet.year}):`, err);
           }
         }
         if (withColumn.length === 0) continue;

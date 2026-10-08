@@ -10,6 +10,7 @@ import {
   blockForDay,
   columnLetter,
   findExcluirColumn,
+  findHeaderColumn,
   planBlockRewrite,
   readDayTabState,
   rowHasData,
@@ -260,6 +261,9 @@ export async function rebuildDayBlock(
   // então precisa acompanhar o lançamento no reordenamento — senão a marcação
   // de um passaria pro que ocupasse a linha dele e o apagaria por engano.
   const excluirIndex = findExcluirColumn(header);
+  // CONCILIADO (conciliação bancária): marcação manual presa à linha, igual
+  // PAGO/CONFERIDO — acompanha o lançamento no reordenamento.
+  const conciliadoIndex = findHeaderColumn(header, "conciliado");
 
   const dataRanges: { range: string; values: (string | number | boolean)[][] }[] = [];
   const refUpdates: { id: string; ref: string }[] = [];
@@ -296,6 +300,7 @@ export async function rebuildDayBlock(
     const consumed = new Set<number>();
     const checkboxRows: boolean[][] = [];
     const excluirRows: boolean[][] = [];
+    const conciliadoRows: boolean[][] = [];
     for (const t of blockTransactions) {
       const amount = Number(t.amount);
       const matchIndex = oldRows.findIndex(
@@ -304,12 +309,14 @@ export async function rebuildDayBlock(
       if (matchIndex < 0) {
         checkboxRows.push([false, false]);
         excluirRows.push([false]);
+        conciliadoRows.push([false]);
         continue;
       }
       consumed.add(matchIndex);
       const row = oldRows[matchIndex];
       checkboxRows.push([row[11] === true, row[12] === true]);
       excluirRows.push([excluirIndex !== null && row[excluirIndex] === true]);
+      conciliadoRows.push([conciliadoIndex !== null && row[conciliadoIndex] === true]);
     }
 
     const blockRows: (string | number)[][] = blockTransactions.map((t) => {
@@ -323,6 +330,7 @@ export async function rebuildDayBlock(
       blockRows.push([d, "", "", "", "", "", "", "", ""]);
       checkboxRows.push([false, false]);
       excluirRows.push([false]);
+      conciliadoRows.push([false]);
     }
 
     dataRanges.push(
@@ -335,6 +343,10 @@ export async function rebuildDayBlock(
     if (excluirIndex !== null) {
       const col = columnLetter(excluirIndex);
       dataRanges.push({ range: `'${monthName}'!${col}${block.start1}:${col}${block.end1}`, values: excluirRows });
+    }
+    if (conciliadoIndex !== null) {
+      const col = columnLetter(conciliadoIndex);
+      dataRanges.push({ range: `'${monthName}'!${col}${block.start1}:${col}${block.end1}`, values: conciliadoRows });
     }
     blockTransactions.forEach((t, index) => {
       refUpdates.push({ id: t.id, ref: `${monthName}!A${block.start1 + index}` });
