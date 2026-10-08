@@ -86,7 +86,17 @@ export function locateDayBlocks(
       if (next === undefined) continue;
       end1 = next - 1;
     } else {
+      // Dia 31 não tem "dia seguinte": vai até a linha antes do "TOTAL DO MÊS"
+      // (texto na coluna Dia), pra o bloco crescer junto quando linhas são
+      // abertas nele; sem isso, assume 30 linhas.
       end1 = start1 + ROWS_PER_DAY - 1;
+      for (let r = start1 + 1; r <= start1 + 150; r++) {
+        const cell = body[r - FIRST_DATA_ROW]?.[diaCol];
+        if (typeof cell === "string" && cell.trim() !== "") {
+          end1 = r - 1;
+          break;
+        }
+      }
     }
     // O usuário ajusta o tamanho de cada dia conforme o movimento (ex: de 16 a
     // 47 linhas na mesma aba), então só descarta o que é claramente absurdo.

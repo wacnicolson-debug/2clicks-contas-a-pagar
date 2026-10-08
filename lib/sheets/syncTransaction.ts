@@ -1,3 +1,4 @@
+import type { sheets_v4 } from "googleapis";
 import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
@@ -9,6 +10,7 @@ import {
   FIRST_DATA_ROW,
   blockForDay,
   columnLetter,
+  findDayColumnOffset,
   findExcluirColumn,
   findHeaderColumn,
   planBlockRewrite,
@@ -16,6 +18,7 @@ import {
   rowHasData,
   rowMatchesTransaction,
   validDay,
+  type DayBlock,
 } from "./dayBlockLayout";
 
 const HEADER_ROWS = 2; // título + cabeçalho, 0-based -> primeira linha de dado = índice 2
@@ -195,7 +198,7 @@ export async function rebuildDayBlock(
   year: number,
   monthName: string,
   day: number,
-  options?: { excludeTransactionId?: string }
+  options?: { excludeTransactionId?: string; retried?: boolean }
 ): Promise<void> {
   const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId } });
   if (!company.googleRefreshToken) return;
@@ -255,6 +258,29 @@ export async function rebuildDayBlock(
     if (t.paid && t.dueDate >= startOfToday) continue;
     const d = t.dueDate.getUTCDate();
     byDay.set(d, [...(byDay.get(d) ?? []), t]);
+  }
+
+  // Dia com mais lançamentos que linhas no bloco: abre linhas novas DENTRO do
+  // bloco (o que o usuário faz na mão) em vez de recusar gravar. Recusar
+  // também travava as exclusões desse dia — pra apagar, o app regrava o bloco
+  // inteiro. Depois da inserção as posições mudam, então relê e regrava.
+  if (!options?.retried) {
+    const needMore = plan.days
+      .map((d) => {
+        const block = plan.blocks.get(d)!;
+        return { block, extra: (byDay.get(d)?.length ?? 0) - (block.end1 - block.start1 + 1) };
+      })
+      .filter((x) => x.extra > 0)
+      .sort((a, b) => b.block.start1 - a.block.start1); // de baixo pra cima: não desloca os de cima
+    if (needMore.length > 0) {
+      await insertRowsInBlocks(
+        sheets,
+        spreadsheetId,
+        monthName,
+        needMore.map((x) => ({ block: x.block, count: x.extra + 3 }))
+      );
+      return rebuildDayBlock(companyId, year, monthName, day, { ...options, retried: true });
+    }
   }
 
   // Coluna EXCLUIR (marcação pra apagar o lançamento): também presa à linha,
@@ -371,6 +397,88 @@ export async function rebuildDayBlock(
       )
     );
   }
+}
+
+/**
+ * Insere linhas dentro de cada bloco (antes da última linha dele, pra o
+ * agrupamento e a soma do "Total do dia" crescerem junto). `items` deve vir de
+ * baixo pra cima, pra uma inserção não deslocar as posições das de cima.
+ */
+async function insertRowsInBlocks(
+  sheets: sheets_v4.Sheets,
+  spreadsheetId: string,
+  tabName: string,
+  items: { block: DayBlock; count: number }[]
+): Promise<void> {
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets.properties(sheetId,title)",
+  });
+  const sheetId = meta.data.sheets?.find((s) => s.properties?.title === tabName)?.properties?.sheetId;
+  if (sheetId == null) throw new Error(`Aba ${tabName} não encontrada pra abrir linhas no bloco do dia.`);
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: items.map(({ block, count }) => ({
+        insertDimension: {
+          range: {
+            sheetId,
+            dimension: "ROWS",
+            startIndex: block.end1 - 1,
+            endIndex: block.end1 - 1 + count,
+          },
+          inheritFromBefore: true,
+        },
+      })),
+    },
+  });
+}
+
+/**
+ * Deixa em branco (mantendo o número do dia) uma linha de bloco já conferida
+ * pelo chamador — último recurso pra uma exclusão marcada na planilha quando
+ * não dá pra regravar o bloco inteiro.
+ */
+export async function blankDayRow(params: {
+  companyId: string;
+  year: number;
+  tabName: string;
+  row1: number;
+  day: number;
+}): Promise<void> {
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: params.companyId } });
+  if (!company.googleRefreshToken) return;
+  const companySheet = await prisma.companySheet.findUnique({
+    where: { companyId_year: { companyId: params.companyId, year: params.year } },
+  });
+  if (!companySheet) return;
+
+  const { sheets } = getGoogleClientsForCompany(company.googleRefreshToken);
+  const headerRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: companySheet.spreadsheetId,
+    range: `'${params.tabName}'!A2:Z2`,
+  });
+  const header = (headerRes.data.values?.[0] ?? []) as unknown[];
+  const offset = findDayColumnOffset(header);
+  const excluirIndex = findExcluirColumn(header);
+  const conciliadoIndex = findHeaderColumn(header, "conciliado");
+
+  const r = params.row1;
+  const data: { range: string; values: (string | number | boolean)[][] }[] = [
+    {
+      range: `'${params.tabName}'!${columnLetter(offset)}${r}:${columnLetter(offset + APP_COLUMN_COUNT - 1)}${r}`,
+      values: [[params.day, "", "", "", "", "", "", "", ""]],
+    },
+    { range: `'${params.tabName}'!L${r}:M${r}`, values: [[false, false]] },
+  ];
+  if (excluirIndex !== null) data.push({ range: `'${params.tabName}'!${columnLetter(excluirIndex)}${r}`, values: [[false]] });
+  if (conciliadoIndex !== null) data.push({ range: `'${params.tabName}'!${columnLetter(conciliadoIndex)}${r}`, values: [[false]] });
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: companySheet.spreadsheetId,
+    requestBody: { valueInputOption: "USER_ENTERED", data },
+  });
 }
 
 type DayRowSource = {

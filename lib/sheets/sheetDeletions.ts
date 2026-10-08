@@ -15,7 +15,7 @@ import {
   rowMatchesTransaction,
   validDay,
 } from "./dayBlockLayout";
-import { rebuildDayBlock } from "./syncTransaction";
+import { blankDayRow, rebuildDayBlock } from "./syncTransaction";
 import { deleteTransactionEverywhere } from "@/lib/transactions/deleteTransaction";
 
 const ROWS_PER_DAY = 30;
@@ -391,8 +391,16 @@ export async function processSheetDeletions(
           const result = await deleteTransactionEverywhere(target.id);
           if (!result.deleted) continue;
           // Garante que a planilha reflete o banco mesmo se o lançamento não
-          // tinha posição guardada (nesse caso a limpeza não reconstruiu o bloco).
-          if (!result.cleared) await rebuildDayBlock(companyId, companySheet.year, f.tab, day);
+          // tinha posição guardada ou a limpeza falhou. Último recurso: deixa
+          // em branco a própria linha marcada (já conferida acima).
+          if (!result.cleared) {
+            try {
+              await rebuildDayBlock(companyId, companySheet.year, f.tab, day);
+            } catch (rebuildErr) {
+              console.error(`Não consegui regravar ${f.tab} dia ${day}; limpando só a linha marcada:`, rebuildErr);
+              await blankDayRow({ companyId, year: companySheet.year, tabName: f.tab, row1: f.row1, day });
+            }
+          }
           deleted++;
         } catch (err) {
           console.error(`Falha ao excluir ${supplierName} marcado na planilha:`, err);
