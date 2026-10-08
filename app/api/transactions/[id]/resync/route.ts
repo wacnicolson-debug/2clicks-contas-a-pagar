@@ -23,6 +23,14 @@ export async function POST(
     return NextResponse.json({ error: "Lançamento não encontrado." }, { status: 404 });
   }
 
-  const result = await resyncTransactionToSheet(transaction.id);
-  return NextResponse.json({ ok: true, result });
+  try {
+    const result = await resyncTransactionToSheet(transaction.id);
+    return NextResponse.json({ ok: true, result });
+  } catch (err) {
+    // Devolve o motivo real (ex: dia com mais de 30 lançamentos, Google fora
+    // do ar) em vez de um "tente de novo" genérico.
+    console.error(`Falha ao reenviar o lançamento ${transaction.id} pra planilha:`, err);
+    const message = err instanceof Error ? err.message : "erro desconhecido";
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
 }

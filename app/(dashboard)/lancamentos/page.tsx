@@ -207,6 +207,14 @@ export default async function LancamentosPage({
                     <td className="px-4 py-2 text-neutral-500">{t.category?.name ?? "—"}</td>
                     <td className="px-4 py-2 text-neutral-500 whitespace-nowrap">
                       {t.paymentStatus ? STATUS_LABEL[t.paymentStatus] : "—"}
+                      {t.sheetCellRef === null && (
+                        <span
+                          className="ml-2 text-xs font-medium text-red-600"
+                          title="Este lançamento está no app mas não foi gravado na planilha. Abra em Editar e use Reenviar pra planilha — a mensagem diz o motivo."
+                        >
+                          fora da planilha
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-2 text-right whitespace-nowrap">
                       <DeleteButton id={t.id} label={t.supplier.name} />

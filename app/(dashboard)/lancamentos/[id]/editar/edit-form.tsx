@@ -128,11 +128,11 @@ export function EditTransactionForm({
     setError(null);
     const res = await fetch(`/api/transactions/${transaction.id}/resync`, { method: "POST" });
     setLoading(false);
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
-      setError("Não foi possível reenviar. Tente de novo.");
+      setError(`Não foi possível reenviar pra planilha. Motivo: ${data?.error ?? "erro desconhecido"}`);
       return;
     }
-    const data = await res.json().catch(() => null);
     const r = data?.result as
       | { action: "exists"; tab: string; row: number }
       | { action: "in_log"; row: number }
