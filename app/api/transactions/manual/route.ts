@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { resolveSupplier } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
+import { adjustDueDate } from "@/lib/utils/businessDays";
 
 type ManualBody = {
   kind: "FORNECEDOR" | "CLIENTE";
@@ -70,13 +71,21 @@ export async function POST(request: NextRequest) {
     },
   });
 
+  // Vencimento em domingo/feriado passa pro próximo dia útil (só conta a pagar).
+  // Já pago mantém a data real (ex: PIX feito num domingo).
+  const adjusted =
+    body.kind === "CLIENTE" || body.paymentStatus === "PAGO"
+      ? { date: body.dueDate, note: null as string | null }
+      : adjustDueDate(body.dueDate);
+
   const transaction = await prisma.transaction.create({
     data: {
       companyId: session.companyId,
       kind: body.kind === "CLIENTE" ? "RECEIVABLE" : "PAYABLE",
       supplierId: updatedSupplier.id,
       amount: body.amount,
-      dueDate: new Date(body.dueDate),
+      dueDate: new Date(adjusted.date),
+      description: adjusted.note,
       paymentStatus: body.kind === "FORNECEDOR" ? body.paymentStatus : undefined,
       paymentMethod: body.kind === "FORNECEDOR" ? body.paymentMethod : undefined,
       pixKey: body.kind === "FORNECEDOR" && body.paymentMethod === "PIX" ? body.pixKey : undefined,

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { rebuildCostSummaryTab } from "@/lib/sheets/rebuildCostSummary";
 import { normalizeText } from "@/lib/utils/normalizeText";
+import { adjustDueDate, withAdjustNote } from "@/lib/utils/businessDays";
 import type { ExtractedPage } from "@/lib/ai/extractDocument";
 import type { Supplier } from "@prisma/client";
 
@@ -178,7 +179,15 @@ export async function POST(
   } else {
     createdIds = [];
     for (const [index, installment] of installments.entries()) {
-      const dueDateStr = installment.dueDate ?? body.manualDueDates![index];
+      // Vencimento em domingo/feriado passa pro próximo dia útil — só conta a
+      // pagar de nota/boleto (extrato e relação de pagamentos já são datas em
+      // que o dinheiro de fato saiu, não se mexe).
+      const rawDueDate = installment.dueDate ?? body.manualDueDates![index];
+      const adjusted =
+        kindKey === "PAYABLE" && !isStatementSource && effectivePaymentStatus !== "PAGO"
+          ? adjustDueDate(rawDueDate)
+          : { date: rawDueDate, note: null as string | null };
+      const dueDateStr = adjusted.date;
       affectedYears.add(new Date(dueDateStr).getUTCFullYear());
       if (noteDate) affectedYears.add(noteDate.getUTCFullYear());
 
@@ -192,7 +201,7 @@ export async function POST(
           amount: installment.amount,
           dueDate: new Date(dueDateStr),
           noteDate,
-          description: body.description?.trim() || null,
+          description: withAdjustNote(body.description, adjusted.note),
           paymentStatus: effectiveKind === "FORNECEDOR" ? (effectivePaymentStatus ?? undefined) : undefined,
           paymentMethod: effectiveKind === "FORNECEDOR" ? (effectivePaymentMethod ?? undefined) : undefined,
           pixKey: effectiveKind === "FORNECEDOR" && effectivePaymentMethod === "PIX" ? effectivePixKey : undefined,
@@ -311,6 +320,11 @@ async function resolveOtherPendingPagesForSupplier(
     const createdIds: string[] = existingForPage.length > 0 ? existingForPage.map((t) => t.id) : [];
     if (existingForPage.length === 0) {
       for (const [index, installment] of extraction.installments.entries()) {
+        // Domingo/feriado passa pro próximo dia útil (só nota a pagar).
+        const adjusted =
+          kindKey === "PAYABLE" && page.document.kind === "INVOICES" && pageStatus !== "PAGO"
+            ? adjustDueDate(installment.dueDate!)
+            : { date: installment.dueDate!, note: null as string | null };
         const transaction = await prisma.transaction.create({
           data: {
             companyId: page.document.companyId,
@@ -319,7 +333,8 @@ async function resolveOtherPendingPagesForSupplier(
             documentPageId: page.id,
             supplierId: supplier.id,
             amount: installment.amount,
-            dueDate: new Date(installment.dueDate!),
+            dueDate: new Date(adjusted.date),
+            description: adjusted.note,
             paymentStatus: supplier.kind === "FORNECEDOR" ? pageStatus : undefined,
             paymentMethod: supplier.kind === "FORNECEDOR" ? (supplier.paymentMethod ?? undefined) : undefined,
             pixKey: supplier.kind === "FORNECEDOR" && supplier.paymentMethod === "PIX" ? supplier.pixKey : undefined,

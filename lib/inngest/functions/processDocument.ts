@@ -5,6 +5,7 @@ import { downloadDocumentFile } from "@/lib/storage/supabase";
 import { extractDocumentPages } from "@/lib/ai/extractDocument";
 import { resolveSupplier, needsOnboardingQuestions } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
+import { adjustDueDate } from "@/lib/utils/businessDays";
 import { compareWithExistingLaunches } from "@/lib/documents/existingLaunches";
 
 export const processDocument = inngest.createFunction(
@@ -115,6 +116,17 @@ export const processDocument = inngest.createFunction(
               : null;
         const directionConflict = !!(documentKind && supplier.kind && documentKind !== supplier.kind);
 
+        // Vencimento em domingo/feriado passa pro próximo dia útil (só conta a
+        // pagar). Aplicado aqui, antes de comparar com o que já foi lançado e de
+        // criar, pra tudo usar a MESMA data — senão reenviar a mesma nota
+        // duplicava (a data lida não bateria com a data já ajustada).
+        const payable = supplier.kind !== "CLIENTE" && documentKind !== "CLIENTE";
+        const launchInstallments = page.installments.map((i) => {
+          if (!payable || !i.dueDate) return { ...i, adjustNote: null as string | null };
+          const adjusted = adjustDueDate(i.dueDate);
+          return { ...i, dueDate: adjusted.date, adjustNote: adjusted.note };
+        });
+
         // Fornecedor conhecido mas a nota não trouxe vencimento nenhum: não dá
         // pra lançar automático sem data (regra: só pergunta quando falta mesmo),
         // então essa página também para na tela de perguntas — só que lá ela vai
@@ -123,7 +135,7 @@ export const processDocument = inngest.createFunction(
           companyId: document.companyId,
           supplierId: supplier.id,
           noteNumber: page.noteNumber,
-          installments: page.installments,
+          installments: launchInstallments,
         });
 
         if (existing.allLaunched) {
@@ -178,7 +190,7 @@ export const processDocument = inngest.createFunction(
 
         // Fornecedor já conhecido: lança automático, sem perguntar de novo.
         const transactionIds: string[] = [];
-        for (const [index, installment] of page.installments.entries()) {
+        for (const [index, installment] of launchInstallments.entries()) {
           // Mesmo fornecedor + mesma data + mesmo valor já lançado antes (nota
           // repetida num arquivo diferente, ou o próprio arquivo reenviado com
           // outro nome/formato) — não duplica, retoma a sincronização dela
@@ -206,6 +218,7 @@ export const processDocument = inngest.createFunction(
               supplierId: supplier.id,
               amount: installment.amount,
               dueDate: new Date(installment.dueDate!), // garantido acima (needsInput cobre data faltante)
+              description: installment.adjustNote,
               // "Pago" não é um traço estável do fornecedor como a categoria
               // é — é um fato de cada cobrança específica. Uma nota nova
               // lançada automático (fornecedor já conhecido) é sempre uma

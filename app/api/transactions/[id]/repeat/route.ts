@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
+import { adjustDueDate, stripAdjustNote, withAdjustNote } from "@/lib/utils/businessDays";
 
 // Mesmo dia do mês, N meses pra frente — dia maior que o mês seguinte tem
 // (ex: 31 de janeiro -> fevereiro) cai no último dia daquele mês.
@@ -48,16 +49,25 @@ export async function POST(
   // DEPOIS, item por item: se uma falhar (ex: conexão com o Google caída),
   // as outras continuam tentando — sem isso, 1 falha no meio abortava o loop
   // inteiro e só os meses já sincronizados ficavam criados, sem aviso claro.
+  // Cada cópia que cair em domingo/feriado passa pro próximo dia útil (só
+  // conta a pagar). A observação da cópia não herda a nota de ajuste do
+  // original — ela vale pra aquela data, não pras outras.
+  const baseDescription = stripAdjustNote(original.description);
   const created = await Promise.all(
-    Array.from({ length: months }, (_, i) =>
-      prisma.transaction.create({
+    Array.from({ length: months }, (_, i) => {
+      const targetIso = addMonthsClamped(original.dueDate, i + 1).toISOString().slice(0, 10);
+      const adjusted =
+        original.kind === "PAYABLE"
+          ? adjustDueDate(targetIso)
+          : { date: targetIso, note: null as string | null };
+      return prisma.transaction.create({
         data: {
           companyId: original.companyId,
           kind: original.kind,
           supplierId: original.supplierId,
           amount: original.amount,
-          dueDate: addMonthsClamped(original.dueDate, i + 1),
-          description: original.description,
+          dueDate: new Date(adjusted.date),
+          description: withAdjustNote(baseDescription, adjusted.note),
           paymentStatus: original.kind === "PAYABLE" ? "A_PAGAR" : null,
           paymentMethod: original.paymentMethod,
           pixKey: original.pixKey,
@@ -65,8 +75,8 @@ export async function POST(
           paid: false,
           createdByUserId: session.userId,
         },
-      })
-    )
+      });
+    })
   );
 
   let syncedCount = 0;
