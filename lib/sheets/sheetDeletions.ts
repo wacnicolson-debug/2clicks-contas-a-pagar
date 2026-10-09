@@ -187,6 +187,10 @@ async function growFullBlocks(
 
   type Plan = { tab: string; offset: number; fillEndCol: number; items: { day: number; end1: number; count: number }[] };
   const plans: Plan[] = [];
+  // Conserto: linha EM BRANCO (sem fornecedor) dentro do bloco de um dia com o
+  // número de OUTRO dia na coluna Dia. Uma versão anterior desta rotina gravou
+  // o número do dia nas linhas erradas. Só mexe em linha vazia, nunca em lançamento.
+  const diaFixes: { range: string; day: number }[] = [];
   tabs.forEach((tab, i) => {
     const values = (res.data.valueRanges?.[i]?.values ?? []) as unknown[][];
     const header = values[0] ?? [];
@@ -201,7 +205,14 @@ async function growFullBlocks(
       if (size >= MAX_BLOCK_ROWS) continue;
       let free = 0;
       for (let r = block.start1; r <= block.end1; r++) {
-        if (!rowHasData(body[r - FIRST_DATA_ROW], supplierCol)) free++;
+        const row = body[r - FIRST_DATA_ROW];
+        if (!rowHasData(row, supplierCol)) {
+          free++;
+          const written = validDay(row?.[offset]);
+          if (r > block.start1 && written !== null && written !== day) {
+            diaFixes.push({ range: `'${tab}'!${columnLetter(offset)}${r}`, day });
+          }
+        }
       }
       // Dia sem nenhum lançamento fica como está (só cresce quem está em uso).
       if (free >= SPARE_ROWS || free === size) continue;
@@ -217,6 +228,15 @@ async function growFullBlocks(
       items: items.sort((a, b) => b.end1 - a.end1), // de baixo pra cima
     });
   });
+  if (diaFixes.length > 0) {
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: diaFixes.map((f) => ({ range: f.range, values: [[f.day]] })),
+      },
+    });
+  }
   if (plans.length === 0) return;
 
   const missingId = tabs.some((t) => plans.some((p) => p.tab === t) && !sheetIdCache.has(`${spreadsheetId}:${t}`));
@@ -259,21 +279,24 @@ async function growFullBlocks(
           fields: "userEnteredFormat.backgroundColor",
         },
       });
+      // Número do dia nas linhas novas (como nas demais linhas do bloco). Vai
+      // NO MESMO pedido, logo depois da inserção: as inserções seguintes (dias
+      // acima) empurram estas linhas junto, então a posição nunca fica errada.
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId,
+            startRowIndex: start,
+            endRowIndex: start + item.count,
+            startColumnIndex: plan.offset,
+            endColumnIndex: plan.offset + 1,
+          },
+          cell: { userEnteredValue: { numberValue: item.day } },
+          fields: "userEnteredValue",
+        },
+      });
     }
     await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
-
-    // Número do dia nas linhas novas (como nas demais linhas do bloco). Como as
-    // inserções foram de baixo pra cima, as posições dos blocos acima não mudaram.
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId,
-      requestBody: {
-        valueInputOption: "USER_ENTERED",
-        data: plan.items.map((item) => ({
-          range: `'${plan.tab}'!${columnLetter(plan.offset)}${item.end1}:${columnLetter(plan.offset)}${item.end1 + item.count - 1}`,
-          values: Array.from({ length: item.count }, () => [item.day]),
-        })),
-      },
-    });
   }
 }
 
