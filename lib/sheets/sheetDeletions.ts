@@ -146,6 +146,7 @@ async function ensureCheckboxColumn(
 
 // Linhas livres que cada dia mantém sobrando: o app abre mais quando o usuário
 // vai preenchendo (ex: conciliação com o extrato, lançando à mão linha a linha).
+const AUTO_GROW_ENABLED = false;
 const SPARE_ROWS = 3;
 const GROW_INTERVAL_MS = 20 * 1000;
 const MAX_BLOCK_ROWS = 120;
@@ -462,7 +463,9 @@ export async function processSheetDeletions(
       const spreadsheetId = companySheet.spreadsheetId;
 
       try {
-        await growFullBlocks(sheets, spreadsheetId, companySheet.year);
+        // DESLIGADO por enquanto: mexia na estrutura da planilha sozinho (linhas,
+        // rótulos de semana) e bagunçou o Outubro. Só volta depois de testado.
+        if (AUTO_GROW_ENABLED) await growFullBlocks(sheets, spreadsheetId, companySheet.year);
       } catch (err) {
         console.error(`Falha ao abrir linhas nos dias cheios (planilha ${companySheet.year}):`, err);
       }
