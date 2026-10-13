@@ -13,7 +13,7 @@ const STATUS_LABEL: Record<string, string> = {
 const PAGE_SIZE = 500;
 
 const SORT_OPTIONS = {
-  venc_asc: "Vencimento (mais próximo)",
+  venc_asc: "Vencimento (mais próximo, de hoje em diante)",
   venc_desc: "Vencimento (mais distante)",
   valor_desc: "Valor (maior)",
   valor_asc: "Valor (menor)",
@@ -56,6 +56,14 @@ export default async function LancamentosPage({
   if (month) {
     const [year, m] = month.split("-").map(Number);
     where.dueDate = { gte: new Date(Date.UTC(year, m - 1, 1)), lt: new Date(Date.UTC(year, m, 1)) };
+  } else if (sort === "venc_asc") {
+    // "Mais próximo" = de hoje pra frente; o que já venceu não entra (pra ver
+    // um mês passado, escolha o mês). Hoje no horário de Brasília.
+    const [y, mo, d] = new Date()
+      .toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" })
+      .split("-")
+      .map(Number);
+    where.dueDate = { gte: new Date(Date.UTC(y, mo - 1, d)) };
   }
 
   const [total, transactions] = await Promise.all([
