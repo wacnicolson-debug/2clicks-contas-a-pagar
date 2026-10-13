@@ -131,7 +131,18 @@ export async function PATCH(
   // lugar, tira da posição atual (o clear confere o conteúdo com os dados
   // antigos). Editar NUNCA cria lançamento novo — se a linha não for achada,
   // a planilha fica como está e a tela avisa.
-  const removedFromOldPlace = inPlace ? false : await clearTransactionFromSheet(transaction.id);
+  // O banco é a fonte da verdade: uma falha na planilha não pode impedir de
+  // salvar a correção — ela é avisada na tela com o motivo.
+  let sheetError: string | null = null;
+  let removedFromOldPlace = false;
+  if (!inPlace) {
+    try {
+      removedFromOldPlace = await clearTransactionFromSheet(transaction.id);
+    } catch (err) {
+      console.error("Falha ao tirar o lançamento da linha antiga da planilha:", err);
+      sheetError = err instanceof Error ? err.message : "erro desconhecido";
+    }
+  }
 
   const updated = await prisma.transaction.update({
     where: { id: transaction.id },
@@ -148,15 +159,19 @@ export async function PATCH(
   });
 
   // O que foi feito na planilha, devolvido pra tela avisar o usuário.
-  let action: "updated" | "moved" | "not_found";
-  if (inPlace) {
-    action = (await updateTransactionRowInPlace(updated.id, previousAmount)) ? "updated" : "not_found";
-  } else if (removedFromOldPlace) {
-    // A linha antiga foi achada e tirada — a MESMA linha passa pro novo lugar.
-    await syncTransactionToSheet(updated.id, { skipDuplicateGuard: true });
-    action = "moved";
-  } else {
-    action = "not_found";
+  let action: "updated" | "moved" | "not_found" = "not_found";
+  try {
+    if (inPlace) {
+      action = (await updateTransactionRowInPlace(updated.id, previousAmount)) ? "updated" : "not_found";
+    } else if (removedFromOldPlace) {
+      // A linha antiga foi achada e tirada — a MESMA linha passa pro novo lugar.
+      await syncTransactionToSheet(updated.id, { skipDuplicateGuard: true });
+      action = "moved";
+    }
+  } catch (err) {
+    console.error("Falha ao atualizar a planilha depois de salvar a edição:", err);
+    sheetError = err instanceof Error ? err.message : "erro desconhecido";
+    await prisma.transaction.update({ where: { id: updated.id }, data: { sheetSyncStatus: "PENDING" } });
   }
 
   const finalRef = await prisma.transaction.findUnique({
@@ -168,6 +183,7 @@ export async function PATCH(
   return NextResponse.json({
     ok: true,
     sheet: { action, tab: tab || null, row: Number(cell?.match(/\d+/)?.[0]) || null },
+    sheetError,
   });
 }
 

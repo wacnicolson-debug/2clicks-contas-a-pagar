@@ -64,15 +64,17 @@ export function EditTransactionForm({
     });
 
     setLoading(false);
+    const data = await res.json().catch(() => null);
     if (!res.ok) {
-      setError("Não foi possível salvar. Tente de novo.");
+      setError(data?.error ?? "Não foi possível salvar. Tente de novo.");
       return;
     }
-    const data = await res.json().catch(() => null);
     const sheet = data?.sheet as { action: string; tab: string | null; row: number | null } | undefined;
     const where = sheet?.tab && sheet.row ? ` (aba ${sheet.tab}, linha ${sheet.row})` : "";
     setResult(
-      sheet?.action === "updated"
+      data?.sheetError
+        ? `Salvo no sistema, mas a planilha não atualizou. Motivo: ${data.sheetError}`
+        : sheet?.action === "updated"
         ? `Salvo. A linha que já existia na planilha foi atualizada${where}.`
         : sheet?.action === "moved"
           ? `Salvo. A linha desse lançamento foi movida na planilha${where}.`
