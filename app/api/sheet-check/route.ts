@@ -94,7 +94,7 @@ export async function GET(request: NextRequest) {
       .filter(({ i }) => !used.has(i))
       .map(
         ({ r }) =>
-          `  linha ${r.row1} (dia ${r.day ?? "?"}): ${r.name}${r.amount !== null ? ` — R$ ${r.amount.toFixed(2)}` : ""}`
+          `  linha ${r.row1} (dia ${r.day ?? `? [célula do dia: ${JSON.stringify(r.cells[state.offset] ?? null)}, tipo ${typeof r.cells[state.offset]}]`}): ${r.name}${r.amount !== null ? ` — R$ ${r.amount.toFixed(2)}` : ""}`
       );
     let outOfBlock = 0;
     for (const r of sheetRows) {
