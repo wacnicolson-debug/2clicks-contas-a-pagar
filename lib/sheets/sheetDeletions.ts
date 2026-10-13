@@ -3,7 +3,6 @@ import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
 import { MONTHS } from "./provisionCompanySheet";
 import {
-  type DayBlock,
   FIRST_DATA_ROW,
   SCAN_LAST_ROW,
   cellToNumber,
@@ -193,7 +192,6 @@ async function growFullBlocks(
   // o número do dia nas linhas erradas. Só mexe em linha vazia, nunca em lançamento.
   const diaFixes: { range: string; day: number }[] = [];
   const labelMoves: { tab: string; labelCol: number; from: number; to: number }[] = [];
-  const locatedByTab = new Map<string, Map<number, DayBlock>>();
   tabs.forEach((tab, i) => {
     const values = (res.data.valueRanges?.[i]?.values ?? []) as unknown[][];
     const header = values[0] ?? [];
@@ -201,7 +199,6 @@ async function growFullBlocks(
     const offset = findDayColumnOffset(header);
     const totalCol = findHeaderColumn(header, "total do dia");
     const located = locateDayBlocks(body, offset, totalCol);
-    locatedByTab.set(tab, located);
     const supplierCol = offset + 2;
     const items: Plan["items"] = [];
 
@@ -260,81 +257,20 @@ async function growFullBlocks(
       },
     });
   }
+  if (plans.length === 0 && labelMoves.length === 0) return;
 
-  // Agrupamentos (o "+" da lateral) de cada aba, junto com os ids das abas.
-  const meta = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: "sheets(properties(sheetId,title),rowGroups)",
-  });
-  const groupsByTab = new Map<string, sheets_v4.Schema$DimensionGroup[]>();
-  for (const s of meta.data.sheets ?? []) {
-    if (s.properties?.title && s.properties.sheetId != null) {
-      sheetIdCache.set(`${spreadsheetId}:${s.properties.title}`, s.properties.sheetId);
-      groupsByTab.set(s.properties.title, s.rowGroups ?? []);
-    }
-  }
-
-  // Cada dia tem o seu "+": agrupa as linhas do bloco SEM a primeira (a linha
-  // do resumo/total do dia fica sempre visível). Quando a linha de início de um
-  // dia caiu dentro do grupo de outro (dois dias no mesmo "+"), desfaz esse
-  // grupo e refaz um por dia. Linhas e valores não são tocados.
-  for (const tab of tabs) {
-    const sheetId = sheetIdCache.get(`${spreadsheetId}:${tab}`);
-    const located = locatedByTab.get(tab);
-    if (sheetId == null || !located || located.size === 0) continue;
-    const groups = groupsByTab.get(tab) ?? [];
-    const starts0 = [...located.values()].map((b) => b.start1 - 1);
-    const bad = groups.filter((g) => {
-      const gs = g.range?.startIndex ?? 0;
-      const ge = g.range?.endIndex ?? 0;
-      return starts0.some((s) => s >= gs && s < ge);
+  const needSheetId = (t: string) =>
+    plans.some((p) => p.tab === t) || labelMoves.some((m) => m.tab === t);
+  const missingId = tabs.some((t) => needSheetId(t) && !sheetIdCache.has(`${spreadsheetId}:${t}`));
+  if (missingId) {
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId,
+      fields: "sheets.properties(sheetId,title)",
     });
-    if (bad.length === 0) continue;
-
-    const requests: sheets_v4.Schema$Request[] = [];
-    const wasCollapsed = bad.some((g) => g.collapsed);
-    for (const g of bad) {
-      requests.push({
-        deleteDimensionGroup: {
-          range: { sheetId, dimension: "ROWS", startIndex: g.range!.startIndex, endIndex: g.range!.endIndex },
-        },
-      });
-    }
-    const minStart = Math.min(...bad.map((g) => g.range?.startIndex ?? 0));
-    const maxEnd = Math.max(...bad.map((g) => g.range?.endIndex ?? 0));
-    // Rows que ficaram escondidas pelo grupo antigo voltam a aparecer; os novos
-    // grupos (se o antigo estava recolhido) escondem de novo só o detalhe.
-    requests.push({
-      updateDimensionProperties: {
-        range: { sheetId, dimension: "ROWS", startIndex: minStart, endIndex: maxEnd },
-        properties: { hiddenByUser: false },
-        fields: "hiddenByUser",
-      },
-    });
-    const affected = [...located.values()].filter(
-      (b) => b.end1 > minStart && b.start1 - 1 < maxEnd && b.end1 - b.start1 >= 1
-    );
-    for (const b of affected) {
-      const range: sheets_v4.Schema$DimensionRange = {
-        sheetId,
-        dimension: "ROWS",
-        startIndex: b.start1, // 0-based da 2ª linha do bloco
-        endIndex: b.end1,
-      };
-      requests.push({ addDimensionGroup: { range } });
-      if (wasCollapsed) {
-        requests.push({
-          updateDimensionGroup: { dimensionGroup: { range, depth: 1, collapsed: true }, fields: "collapsed" },
-        });
-        requests.push({
-          updateDimensionProperties: { range, properties: { hiddenByUser: true }, fields: "hiddenByUser" },
-        });
+    for (const s of meta.data.sheets ?? []) {
+      if (s.properties?.title && s.properties.sheetId != null) {
+        sheetIdCache.set(`${spreadsheetId}:${s.properties.title}`, s.properties.sheetId);
       }
-    }
-    try {
-      await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
-    } catch (err) {
-      console.error(`Falha ao refazer os agrupamentos por dia em ${tab}:`, err);
     }
   }
 
