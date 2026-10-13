@@ -191,6 +191,7 @@ async function growFullBlocks(
   // número de OUTRO dia na coluna Dia. Uma versão anterior desta rotina gravou
   // o número do dia nas linhas erradas. Só mexe em linha vazia, nunca em lançamento.
   const diaFixes: { range: string; day: number }[] = [];
+  const labelMoves: { tab: string; labelCol: number; from: number; to: number }[] = [];
   tabs.forEach((tab, i) => {
     const values = (res.data.valueRanges?.[i]?.values ?? []) as unknown[][];
     const header = values[0] ?? [];
@@ -200,6 +201,25 @@ async function growFullBlocks(
     const located = locateDayBlocks(body, offset, totalCol);
     const supplierCol = offset + 2;
     const items: Plan["items"] = [];
+
+    // "SEMANA N" fica na primeira linha do bloco do dia em que a semana começa.
+    // Se ela ficou pra trás (linhas abertas entre ela e o bloco), puxa pra
+    // linha de início do bloco logo abaixo. Só mexe se o destino está vazio.
+    const labelCol = findHeaderColumn(header, "semana") ?? (offset > 0 ? 0 : null);
+    if (labelCol !== null) {
+      const starts = new Set([...located.values()].map((b) => b.start1));
+      const sortedStarts = [...starts].sort((a, b) => a - b);
+      body.forEach((row, idx) => {
+        const r = FIRST_DATA_ROW + idx;
+        if (!/^\s*semana\s*\d+/i.test(String(row?.[labelCol] ?? ""))) return;
+        if (starts.has(r)) return;
+        const target = sortedStarts.find((s) => s > r);
+        if (target === undefined || target - r > 40) return;
+        if (String(body[target - FIRST_DATA_ROW]?.[labelCol] ?? "").trim() !== "") return;
+        labelMoves.push({ tab, labelCol, from: r, to: target });
+      });
+    }
+
     for (const [day, block] of located) {
       const size = block.end1 - block.start1 + 1;
       if (size >= MAX_BLOCK_ROWS) continue;
@@ -237,9 +257,11 @@ async function growFullBlocks(
       },
     });
   }
-  if (plans.length === 0) return;
+  if (plans.length === 0 && labelMoves.length === 0) return;
 
-  const missingId = tabs.some((t) => plans.some((p) => p.tab === t) && !sheetIdCache.has(`${spreadsheetId}:${t}`));
+  const needSheetId = (t: string) =>
+    plans.some((p) => p.tab === t) || labelMoves.some((m) => m.tab === t);
+  const missingId = tabs.some((t) => needSheetId(t) && !sheetIdCache.has(`${spreadsheetId}:${t}`));
   if (missingId) {
     const meta = await sheets.spreadsheets.get({
       spreadsheetId,
@@ -249,6 +271,37 @@ async function growFullBlocks(
       if (s.properties?.title && s.properties.sheetId != null) {
         sheetIdCache.set(`${spreadsheetId}:${s.properties.title}`, s.properties.sheetId);
       }
+    }
+  }
+
+  // Rótulos de semana primeiro (as posições vêm da leitura, ainda sem as
+  // inserções abaixo); mover célula não desloca nenhuma linha.
+  for (const move of labelMoves) {
+    const sheetId = sheetIdCache.get(`${spreadsheetId}:${move.tab}`);
+    if (sheetId == null) continue;
+    try {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              cutPaste: {
+                source: {
+                  sheetId,
+                  startRowIndex: move.from - 1,
+                  endRowIndex: move.from,
+                  startColumnIndex: move.labelCol,
+                  endColumnIndex: move.labelCol + 1,
+                },
+                destination: { sheetId, rowIndex: move.to - 1, columnIndex: move.labelCol },
+                pasteType: "PASTE_NORMAL",
+              },
+            },
+          ],
+        },
+      });
+    } catch (err) {
+      console.error(`Falha ao mover o rótulo de semana em ${move.tab}:`, err);
     }
   }
 
