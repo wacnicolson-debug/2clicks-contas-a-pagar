@@ -321,6 +321,9 @@ model PurchaseNote {
   installmentCount Int       @default(1)
   remark           String?
   // Leitura dos itens (só notas de estoque): NONE | PENDING | DONE | ERROR
+  // Cabeçalho fiscal (CNPJ, CFOP, série, chave, impostos): PENDING | DONE | SKIPPED (não é nota fiscal) | ERROR
+  headerStatus     String    @default("PENDING")
+  header           Json?
   itemsStatus      String    @default("NONE")
   items            Json?
   createdAt        DateTime  @default(now())

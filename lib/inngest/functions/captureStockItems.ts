@@ -20,6 +20,7 @@ export const captureStockItems = inngest.createFunction(
       prisma.purchaseNote.findUnique({ where: { id: purchaseNoteId } })
     );
     if (!note || !note.stockKind) return { skipped: true };
+    if (note.headerStatus !== "DONE") return { skipped: "cabeçalho fiscal ainda não lido" };
     if (note.itemsStatus === "DONE") return { skipped: "já lida" };
 
     const result = await step.run("read-items", async () => {

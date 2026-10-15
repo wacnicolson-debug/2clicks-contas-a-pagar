@@ -3,14 +3,21 @@ import { getGoogleClientsForCompany } from "@/lib/sheets/client";
 import { MONTHS } from "@/lib/sheets/provisionCompanySheet";
 import { inngest } from "@/lib/inngest/client";
 import { sameSupplierName } from "@/lib/transactions/findIdentical";
+import { downloadDocumentFile } from "@/lib/storage/supabase";
 import type { PurchaseItem } from "@/lib/ai/extractPurchaseItems";
-import { COMPRAS_TAB, ESTOQUE_TAB, getOrCreateStockSheetForYear } from "./stockSheet";
+import { extractPurchaseHeader, type PurchaseHeader } from "@/lib/ai/extractPurchaseHeader";
+import { COMPRAS_TABLE_COLS, ESTOQUE_HEADERS, ESTOQUE_TAB, getOrCreateStockSheetForYear, isMonthTab } from "./stockSheet";
 import { STOCK_KIND_LABEL, stockKindForCategory, type StockKind } from "./stockRules";
 
-const ID_COL: Record<string, { letter: string; last: string }> = {
-  [COMPRAS_TAB]: { letter: "I", last: "I" },
-  [ESTOQUE_TAB]: { letter: "L", last: "L" },
-};
+const MAX_ROWS = 20000;
+
+// A coluna ID (oculta) é a última da tabela: P nas abas de mês, L no Estoque.
+function idColLetter(tab: string): string {
+  return isMonthTab(tab) ? "P" : "L";
+}
+function tableCols(tab: string): number {
+  return isMonthTab(tab) ? COMPRAS_TABLE_COLS : ESTOQUE_HEADERS.length;
+}
 
 // Duas notas gravando na mesma aba ao mesmo tempo não podem escolher a mesma
 // linha livre — trava no banco por planilha+aba enquanto lê a próxima linha e grava.
@@ -26,9 +33,16 @@ async function withTabLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
 
 async function readIds(spreadsheetId: string, tab: string, token: string): Promise<string[]> {
   const { sheets } = getGoogleClientsForCompany(token);
-  const col = ID_COL[tab].letter;
+  const col = idColLetter(tab);
   const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${tab}'!${col}1:${col}${25000}` });
   return (res.data.values ?? []).map((r) => String(r?.[0] ?? ""));
+}
+
+async function sheetIdOf(spreadsheetId: string, tab: string, token: string): Promise<number | null> {
+  const { sheets } = getGoogleClientsForCompany(token);
+  const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
+  const id = meta.data.sheets?.find((s) => s.properties?.title === tab)?.properties?.sheetId;
+  return id === undefined || id === null ? null : id;
 }
 
 async function appendRows(
@@ -44,10 +58,32 @@ async function appendRows(
     const { sheets } = getGoogleClientsForCompany(token);
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `'${tab}'!A${next}:${ID_COL[tab].last}${next + rows.length - 1}`,
+      range: `'${tab}'!A${next}:${idColLetter(tab)}${next + rows.length - 1}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: rows },
     });
+    if (isMonthTab(tab)) {
+      // Aba de mês: sempre em ordem de emissão (a coluna ID acompanha a linha).
+      const sheetId = await sheetIdOf(spreadsheetId, tab, token);
+      if (sheetId !== null) {
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [
+              {
+                sortRange: {
+                  range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: COMPRAS_TABLE_COLS },
+                  sortSpecs: [
+                    { dimensionIndex: 0, sortOrder: "ASCENDING" },
+                    { dimensionIndex: 1, sortOrder: "ASCENDING" },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+      }
+    }
   });
 }
 
@@ -61,9 +97,8 @@ async function removeRowsById(spreadsheetId: string, tab: string, token: string,
     });
     if (rows.length === 0) return 0;
     const { sheets } = getGoogleClientsForCompany(token);
-    const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
-    const sheetId = meta.data.sheets?.find((s) => s.properties?.title === tab)?.properties?.sheetId;
-    if (sheetId === undefined || sheetId === null) return 0;
+    const sheetId = await sheetIdOf(spreadsheetId, tab, token);
+    if (sheetId === null) return 0;
     // de baixo pra cima, juntando linhas seguidas num pedido só
     const ranges: { start: number; end: number }[] = [];
     for (const r of rows.sort((a, b) => b - a)) {
@@ -71,15 +106,14 @@ async function removeRowsById(spreadsheetId: string, tab: string, token: string,
       if (last && last.start === r + 1) last.start = r;
       else ranges.push({ start: r, end: r + 1 });
     }
-    const tableCols = tab === COMPRAS_TAB ? 9 : 12;
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: {
-        // Só as colunas da tabela sobem (o resumo mensal ao lado, colunas N:R,
-        // ficaria deslocado se a linha inteira fosse apagada).
+        // Só as colunas da tabela sobem (o resumo ao lado ficaria deslocado se a
+        // linha inteira fosse apagada).
         requests: ranges.map((g) => ({
           deleteRange: {
-            range: { sheetId, startRowIndex: g.start, endRowIndex: g.end, startColumnIndex: 0, endColumnIndex: tableCols },
+            range: { sheetId, startRowIndex: g.start, endRowIndex: g.end, startColumnIndex: 0, endColumnIndex: tableCols(tab) },
             shiftDimension: "ROWS",
           },
         })),
@@ -105,11 +139,19 @@ async function companyToken(companyId: string): Promise<string> {
   return c.googleRefreshToken;
 }
 
+function formatCnpj(d: string | null | undefined): string {
+  const x = (d ?? "").replace(/\D/g, "");
+  return x.length === 14 ? `${x.slice(0, 2)}.${x.slice(2, 5)}.${x.slice(5, 8)}/${x.slice(8, 12)}-${x.slice(12)}` : x;
+}
+
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
  * Chamada depois que um lançamento de nota entra na planilha de contas a
- * pagar. Garante UMA linha por NOTA na aba Compras (valor total da nota, não
- * por parcela) e, se a categoria for de estoque (matéria-prima ou produto
- * químico), agenda a leitura dos itens pra aba Estoque. Idempotente.
+ * pagar. Cria UMA nota de compra por NOTA (não por parcela) e agenda a leitura
+ * do cabeçalho fiscal. A linha só entra na planilha de Compras depois dessa
+ * leitura (é ela que diz se é nota fiscal e em que mês/dia a nota cai).
+ * Idempotente.
  */
 export async function capturePurchaseForTransaction(transactionId: string): Promise<void> {
   const t = await prisma.transaction.findUnique({
@@ -121,10 +163,22 @@ export async function capturePurchaseForTransaction(transactionId: string): Prom
   const stockKind = stockKindForCategory(t.category?.name);
   const existing = await prisma.purchaseNote.findUnique({ where: { documentPageId: t.documentPageId } });
   if (existing) {
-    // A categoria virou de estoque depois (edição): passa a ler os itens.
-    if (stockKind && existing.itemsStatus === "NONE") {
-      await prisma.purchaseNote.update({ where: { id: existing.id }, data: { stockKind, itemsStatus: "PENDING" } });
-      await queueItems(existing.id);
+    // Categoria mudou depois (edição): atualiza a nota, a linha de Compras e,
+    // se virou de estoque, passa a ler os itens.
+    const categoryName = t.category?.name ?? null;
+    if (existing.categoryName !== categoryName || (stockKind && !existing.stockKind)) {
+      const becameStock = !!stockKind && !existing.stockKind;
+      const updated = await prisma.purchaseNote.update({
+        where: { id: existing.id },
+        data: {
+          categoryName,
+          ...(becameStock ? { stockKind, itemsStatus: existing.headerStatus === "SKIPPED" ? "NONE" : "PENDING" } : {}),
+        },
+      });
+      if (updated.headerStatus === "DONE") {
+        await writeComprasRow(updated.id);
+        if (becameStock) await queueItems(updated.id);
+      }
     }
     return;
   }
@@ -156,53 +210,46 @@ export async function capturePurchaseForTransaction(transactionId: string): Prom
     }
   }
 
-  const issueDate = raw.issueDate && /^\d{4}-\d{2}-\d{2}$/.test(raw.issueDate) ? new Date(`${raw.issueDate}T00:00:00Z`) : null;
-  const firstDue = installments.map((i) => i.dueDate).filter((d): d is string => !!d && /^\d{4}-\d{2}-\d{2}$/.test(d)).sort()[0];
+  // Mês provisório (a leitura do cabeçalho acerta pela data de emissão).
+  const issueDate = raw.issueDate && ISO.test(raw.issueDate) ? new Date(`${raw.issueDate}T00:00:00Z`) : null;
+  const firstDue = installments.map((i) => i.dueDate).filter((d): d is string => !!d && ISO.test(d)).sort()[0];
   const base = issueDate ?? (firstDue ? new Date(`${firstDue}T00:00:00Z`) : t.dueDate);
   const monthDate = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1));
-  const remark = issueDate ? null : "Mês pelo vencimento (a nota não trouxe data de emissão legível)";
 
-  const note = await prisma.purchaseNote.create({
-    data: {
-      companyId: t.companyId,
-      documentPageId: t.documentPageId,
-      documentId: t.documentId!,
-      supplierId: t.supplierId,
-      noteNumber,
-      issueDate,
-      monthDate,
-      year: monthDate.getUTCFullYear(),
-      categoryName: t.category?.name ?? null,
-      stockKind,
-      totalAmount: total,
-      installmentCount,
-      remark,
-      itemsStatus: stockKind ? "PENDING" : "NONE",
-    },
-  });
-
+  let note;
   try {
-    const token = await companyToken(t.companyId);
-    const spreadsheetId = await getOrCreateStockSheetForYear(t.companyId, note.year);
-    await appendRows(spreadsheetId, COMPRAS_TAB, token, [
-      [
-        MONTHS[monthDate.getUTCMonth()],
-        brDate(issueDate),
-        t.supplier.name,
-        noteNumber ?? "",
-        t.category?.name ?? "",
-        total,
+    note = await prisma.purchaseNote.create({
+      data: {
+        companyId: t.companyId,
+        documentPageId: t.documentPageId,
+        documentId: t.documentId!,
+        supplierId: t.supplierId,
+        noteNumber,
+        issueDate,
+        monthDate,
+        year: monthDate.getUTCFullYear(),
+        categoryName: t.category?.name ?? null,
+        stockKind,
+        totalAmount: total,
         installmentCount,
-        remark ?? "",
-        note.id,
-      ],
-    ]);
+        headerStatus: "PENDING",
+        itemsStatus: stockKind ? "PENDING" : "NONE",
+      },
+    });
   } catch (err) {
-    await prisma.purchaseNote.delete({ where: { id: note.id } }).catch(() => {});
+    // outra parcela da mesma nota criou primeiro
+    if ((err as { code?: string }).code === "P2002") return;
     throw err;
   }
+  await queueHeader(note.id);
+}
 
-  if (stockKind) await queueItems(note.id);
+async function queueHeader(purchaseNoteId: string): Promise<void> {
+  try {
+    await inngest.send({ id: `purchase-header-${purchaseNoteId}`, name: "purchase/header", data: { purchaseNoteId } });
+  } catch (err) {
+    console.error(`Não consegui agendar a leitura fiscal da nota ${purchaseNoteId}:`, err);
+  }
 }
 
 async function queueItems(purchaseNoteId: string): Promise<void> {
@@ -213,10 +260,113 @@ async function queueItems(purchaseNoteId: string): Promise<void> {
   }
 }
 
+/** Lê o cabeçalho fiscal da nota (página + folhas de continuação). */
+export async function readPurchaseHeader(purchaseNoteId: string): Promise<PurchaseHeader> {
+  const note = await prisma.purchaseNote.findUniqueOrThrow({ where: { id: purchaseNoteId } });
+  try {
+    const page = await prisma.documentPage.findUniqueOrThrow({ where: { id: note.documentPageId } });
+    const document = await prisma.document.findUniqueOrThrow({ where: { id: note.documentId } });
+    const siblings = await prisma.documentPage.findMany({ where: { documentId: note.documentId } });
+    const continuation = siblings
+      .filter((p) => (p.rawExtraction as { duplicateOfPageNumber?: number | null }).duplicateOfPageNumber === page.pageNumber)
+      .map((p) => p.pageNumber);
+    const buffer = await downloadDocumentFile(document.storagePath);
+    return await extractPurchaseHeader({
+      fileBase64: buffer.toString("base64"),
+      mimeType: document.mimeType,
+      pageNumbers: [page.pageNumber, ...continuation].sort((a, b) => a - b),
+    });
+  } catch (err) {
+    await prisma.purchaseNote.update({ where: { id: note.id }, data: { headerStatus: "ERROR" } });
+    throw err;
+  }
+}
+
+/**
+ * Grava o cabeçalho lido e põe a nota na aba do mês certo. Não é nota fiscal
+ * (boleto, guia, folha...): fica de fora das duas abas. Devolve se há itens a ler.
+ */
+export async function savePurchaseHeader(purchaseNoteId: string, header: PurchaseHeader): Promise<{ skipped: boolean; readItems: boolean }> {
+  const note = await prisma.purchaseNote.findUniqueOrThrow({ where: { id: purchaseNoteId } });
+  if (header.docType === "OUTRO") {
+    await prisma.purchaseNote.update({
+      where: { id: note.id },
+      data: { headerStatus: "SKIPPED", stockKind: null, itemsStatus: "NONE", header: header as unknown as object },
+    });
+    return { skipped: true, readItems: false };
+  }
+
+  const prev = note.headerStatus === "DONE" ? { year: note.year, monthDate: note.monthDate } : undefined;
+  const issueDate = header.issueDate ? new Date(`${header.issueDate}T00:00:00Z`) : note.issueDate;
+  const firstDue = (await prisma.transaction.findMany({ where: { documentPageId: note.documentPageId }, select: { dueDate: true }, orderBy: { dueDate: "asc" }, take: 1 }))[0]?.dueDate;
+  const base = issueDate ?? firstDue ?? note.monthDate;
+  const monthDate = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), 1));
+
+  const remarks: string[] = [];
+  if (header.remark) remarks.push(header.remark);
+  if (!issueDate) remarks.push("Mês pelo vencimento (a nota não trouxe data de emissão legível)");
+  const installmentsTotal = Number(note.totalAmount);
+  if (header.noteTotal !== null && Math.abs(header.noteTotal - installmentsTotal) > 0.05) {
+    remarks.push(`Total da nota (R$ ${header.noteTotal.toFixed(2)}) difere da soma das parcelas lançadas (R$ ${installmentsTotal.toFixed(2)}) — conferir`);
+  }
+
+  await prisma.purchaseNote.update({
+    where: { id: note.id },
+    data: {
+      headerStatus: "DONE",
+      header: header as unknown as object,
+      noteNumber: header.noteNumber ?? note.noteNumber,
+      issueDate,
+      monthDate,
+      year: monthDate.getUTCFullYear(),
+      remark: remarks.join("; ") || null,
+    },
+  });
+  await writeComprasRow(note.id, prev);
+  return { skipped: false, readItems: !!note.stockKind && note.itemsStatus !== "DONE" };
+}
+
+/** Escreve (ou muda de lugar) a linha da nota na aba do mês dela. `prev` = onde ela estava antes. */
+export async function writeComprasRow(purchaseNoteId: string, prev?: { year: number; monthDate: Date }): Promise<void> {
+  const note = await prisma.purchaseNote.findUnique({ where: { id: purchaseNoteId }, include: { supplier: true } });
+  if (!note || note.headerStatus !== "DONE") return;
+  const token = await companyToken(note.companyId);
+  const h = (note.header ?? {}) as Partial<PurchaseHeader>;
+
+  if (prev) {
+    const old = await prisma.stockSheet.findUnique({ where: { companyId_year: { companyId: note.companyId, year: prev.year } } });
+    if (old) await removeRowsById(old.spreadsheetId, MONTHS[prev.monthDate.getUTCMonth()], token, note.id);
+  }
+  const spreadsheetId = await getOrCreateStockSheetForYear(note.companyId, note.year);
+  const tab = MONTHS[note.monthDate.getUTCMonth()];
+  await removeRowsById(spreadsheetId, tab, token, note.id); // idempotente: nunca duas linhas da mesma nota
+  const blank = (v: number | null | undefined) => (v === null || v === undefined ? "" : v);
+  await appendRows(spreadsheetId, tab, token, [
+    [
+      brDate(note.issueDate),
+      note.supplier.name,
+      (h.cfops ?? []).join(" / "),
+      h.noteTotal ?? Number(note.totalAmount),
+      formatCnpj(h.supplierCnpj),
+      note.noteNumber ?? "",
+      h.series ?? "",
+      blank(h.productsTotal),
+      blank(h.freight),
+      blank(h.ipi),
+      blank(h.icmsBase),
+      blank(h.icmsValue),
+      note.categoryName ?? "",
+      h.accessKey ?? "",
+      note.remark ?? "",
+      note.id,
+    ],
+  ]);
+}
+
 /** Grava (ou regrava) as linhas de itens de uma nota na aba Estoque. */
 export async function writeEstoqueRows(purchaseNoteId: string): Promise<void> {
   const note = await prisma.purchaseNote.findUnique({ where: { id: purchaseNoteId }, include: { supplier: true } });
-  if (!note || !note.stockKind) return;
+  if (!note || !note.stockKind || note.headerStatus !== "DONE") return;
   const token = await companyToken(note.companyId);
   const spreadsheetId = await getOrCreateStockSheetForYear(note.companyId, note.year);
   await removeRowsById(spreadsheetId, ESTOQUE_TAB, token, note.id);
@@ -247,9 +397,9 @@ export async function removePurchaseForPage(documentPageId: string): Promise<voi
   if (!note) return;
   try {
     const stock = await prisma.stockSheet.findUnique({ where: { companyId_year: { companyId: note.companyId, year: note.year } } });
-    if (stock) {
+    if (stock && note.headerStatus === "DONE") {
       const token = await companyToken(note.companyId);
-      await removeRowsById(stock.spreadsheetId, COMPRAS_TAB, token, note.id);
+      await removeRowsById(stock.spreadsheetId, MONTHS[note.monthDate.getUTCMonth()], token, note.id);
       await removeRowsById(stock.spreadsheetId, ESTOQUE_TAB, token, note.id);
     }
   } catch (err) {
@@ -266,38 +416,19 @@ export async function removePurchaseIfOrphan(documentPageId: string | null | und
 }
 
 /**
- * A nota não tinha data de emissão no lançamento (leitura antiga) e a leitura
- * dos itens achou: acerta a data e o mês da nota no banco e na aba Compras
- * (tirando a linha da planilha do ano antigo e regravando no ano certo).
+ * Nota sem data de emissão depois da leitura fiscal: a leitura dos itens achou
+ * (ou o cabeçalho veio sem). Acerta data e mês no banco e muda a linha de aba.
  */
 export async function applyIssueDate(purchaseNoteId: string, issueDateIso: string): Promise<void> {
-  const note = await prisma.purchaseNote.findUnique({ where: { id: purchaseNoteId }, include: { supplier: true } });
-  if (!note || note.issueDate || !/^\d{4}-\d{2}-\d{2}$/.test(issueDateIso)) return;
+  const note = await prisma.purchaseNote.findUnique({ where: { id: purchaseNoteId } });
+  if (!note || note.issueDate || !ISO.test(issueDateIso)) return;
   const issueDate = new Date(`${issueDateIso}T00:00:00Z`);
   const monthDate = new Date(Date.UTC(issueDate.getUTCFullYear(), issueDate.getUTCMonth(), 1));
-  const oldYear = note.year;
-  const token = await companyToken(note.companyId);
-
-  const oldStock = await prisma.stockSheet.findUnique({ where: { companyId_year: { companyId: note.companyId, year: oldYear } } });
-  if (oldStock) await removeRowsById(oldStock.spreadsheetId, COMPRAS_TAB, token, note.id);
-
   const remark = note.remark?.replace(/Mês pelo vencimento \([^)]*\);?\s*/g, "").trim() || null;
-  const updated = await prisma.purchaseNote.update({
+  const prev = note.headerStatus === "DONE" ? { year: note.year, monthDate: note.monthDate } : undefined;
+  await prisma.purchaseNote.update({
     where: { id: note.id },
     data: { issueDate, monthDate, year: monthDate.getUTCFullYear(), remark },
   });
-  const spreadsheetId = await getOrCreateStockSheetForYear(updated.companyId, updated.year);
-  await appendRows(spreadsheetId, COMPRAS_TAB, token, [
-    [
-      MONTHS[monthDate.getUTCMonth()],
-      brDate(issueDate),
-      note.supplier.name,
-      note.noteNumber ?? "",
-      note.categoryName ?? "",
-      Number(note.totalAmount),
-      note.installmentCount,
-      remark ?? "",
-      note.id,
-    ],
-  ]);
+  await writeComprasRow(note.id, prev);
 }
