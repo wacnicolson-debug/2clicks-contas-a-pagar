@@ -4,6 +4,7 @@ import { getGoogleClientsForCompany } from "@/lib/sheets/client";
 import { MONTHS } from "@/lib/sheets/provisionCompanySheet";
 
 export const ESTOQUE_TAB = "Estoque";
+export const ITENS_TAB = "Itens";
 
 // Planilha de COMPRAS: uma aba por mês, só notas fiscais, em ordem de emissão.
 // Pensada pra digitar a nota no Alterdata Fiscal: as 4 primeiras colunas são as
@@ -50,7 +51,30 @@ export const ESTOQUE_HEADERS = [
   "Valor unitário",
   "Valor do item",
   "Observação",
+  "Item padrão",
   "ID",
+];
+
+// Aba Itens: uma linha por item padrão, com última compra, variação e média dos
+// últimos 3 meses. Reescrita inteira pelo app a cada nota de estoque.
+export const ITENS_HEADERS = [
+  "Item",
+  "Tipo",
+  "Un",
+  "Genérico",
+  "Última compra",
+  "Fornecedor (última)",
+  "Qtd (última)",
+  "Último preço",
+  "Preço anterior",
+  "Fornecedor (anterior)",
+  "Variação",
+  "Preço médio 3 meses",
+  "Qtd 3 meses",
+  "Total 3 meses",
+  "Menor preço 3m",
+  "Maior preço 3m",
+  "Nº de compras",
 ];
 
 const MAX_ROWS = 20000;
@@ -249,6 +273,56 @@ export function monthTabRequests(sheetId: number): sheets_v4.Schema$Request[] {
   ];
 }
 
+const PRICE_PATTERN = '"R$" #,##0.00##';
+
+function itensRequests(sheetId: number): sheets_v4.Schema$Request[] {
+  const n = ITENS_HEADERS.length;
+  const fmt = (col: number, type: string, pattern: string): sheets_v4.Schema$Request => ({
+    repeatCell: {
+      range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: col, endColumnIndex: col + 1 },
+      cell: { userEnteredFormat: { numberFormat: { type, pattern } } },
+      fields: "userEnteredFormat.numberFormat",
+    },
+  });
+  return [
+    { mergeCells: { range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: n }, mergeType: "MERGE_ALL" } },
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+        cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 12 }, backgroundColor: GREEN } },
+        fields: "userEnteredFormat(textFormat,backgroundColor)",
+      },
+    },
+    {
+      repeatCell: {
+        range: { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: n },
+        cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: GREY, wrapStrategy: "WRAP" } },
+        fields: "userEnteredFormat(textFormat,backgroundColor,wrapStrategy)",
+      },
+    },
+    { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 2 } }, fields: "gridProperties.frozenRowCount" } },
+    { setBasicFilter: { filter: { range: { sheetId, startRowIndex: 1, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: n } } } },
+    fmt(4, "DATE", "dd/mm/yyyy"),
+    fmt(6, "NUMBER", "#,##0.00"),
+    fmt(7, "CURRENCY", PRICE_PATTERN),
+    fmt(8, "CURRENCY", PRICE_PATTERN),
+    fmt(10, "PERCENT", "0.0%"),
+    fmt(11, "CURRENCY", PRICE_PATTERN),
+    fmt(12, "NUMBER", "#,##0.00"),
+    fmt(13, "CURRENCY", '"R$" #,##0.00'),
+    fmt(14, "CURRENCY", PRICE_PATTERN),
+    fmt(15, "CURRENCY", PRICE_PATTERN),
+    ...widthRequests(sheetId, { 0: 300, 1: 130, 2: 50, 3: 80, 4: 100, 5: 230, 6: 90, 7: 105, 8: 105, 9: 230, 10: 80, 11: 120, 12: 95, 13: 110, 14: 105, 15: 105, 16: 90 }),
+  ];
+}
+
+export function itensValues(year: number): { range: string; values: (string | number)[][] }[] {
+  return [
+    { range: `'${ITENS_TAB}'!A1`, values: [[`ITENS ${year} — último preço, variação e preço médio dos últimos 3 meses por item (atualiza a cada nota)`]] },
+    { range: `'${ITENS_TAB}'!A2`, values: [ITENS_HEADERS] },
+  ];
+}
+
 function estoqueRequests(sheetId: number): sheets_v4.Schema$Request[] {
   const n = ESTOQUE_HEADERS.length;
   return [
@@ -276,6 +350,8 @@ function estoqueRequests(sheetId: number): sheets_v4.Schema$Request[] {
         fields: "userEnteredFormat.numberFormat",
       },
     },
+    // (a coluna do ID já foi a L; desoculta caso a planilha seja de antes do "Item padrão")
+    { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 11, endIndex: 12 }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } },
     { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: n - 1, endIndex: n }, properties: { hiddenByUser: true }, fields: "hiddenByUser" } },
     ...summaryFormatRequests(sheetId),
     moneyFormat(sheetId, 8),
@@ -287,7 +363,7 @@ function estoqueRequests(sheetId: number): sheets_v4.Schema$Request[] {
         fields: "userEnteredFormat.numberFormat",
       },
     },
-    ...widthRequests(sheetId, { 0: 90, 1: 95, 2: 260, 3: 110, 4: 150, 5: 330, 6: 80, 7: 50, 8: 110, 9: 110, 10: 240, 13: 125, 14: 125, 15: 125, 16: 125, 17: 125 }),
+    ...widthRequests(sheetId, { 0: 90, 1: 95, 2: 260, 3: 110, 4: 150, 5: 330, 6: 80, 7: 50, 8: 110, 9: 110, 10: 240, 11: 260, 13: 125, 14: 125, 15: 125, 16: 125, 17: 125 }),
   ];
 }
 
@@ -308,7 +384,7 @@ export async function provisionStockSheet(
   const created = await sheets.spreadsheets.create({
     requestBody: {
       properties: { title: `Compras e Estoque — ${companyName} — ${year}`, locale: "pt_BR" },
-      sheets: [...MONTHS.map((m) => ({ properties: { title: m } })), { properties: { title: ESTOQUE_TAB } }],
+      sheets: [...MONTHS.map((m) => ({ properties: { title: m } })), { properties: { title: ESTOQUE_TAB } }, { properties: { title: ITENS_TAB } }],
     },
   });
   const spreadsheetId = created.data.spreadsheetId;
@@ -320,13 +396,13 @@ export async function provisionStockSheet(
     spreadsheetId,
     requestBody: {
       valueInputOption: "USER_ENTERED",
-      data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...estoqueValues(year)],
+      data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...estoqueValues(year), ...itensValues(year)],
     },
   });
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: {
-      requests: [...MONTHS.flatMap((m) => monthTabRequests(idOf(m))), ...estoqueRequests(idOf(ESTOQUE_TAB))],
+      requests: [...MONTHS.flatMap((m) => monthTabRequests(idOf(m))), ...estoqueRequests(idOf(ESTOQUE_TAB)), ...itensRequests(idOf(ITENS_TAB))],
     },
   });
   return spreadsheetId;
@@ -379,6 +455,13 @@ export async function migrateStockSheetToMonthTabs(
     });
     stale.forEach((m) => titles.delete(m));
   }
+  if (!titles.has(ITENS_TAB)) {
+    const res = await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: [{ addSheet: { properties: { title: ITENS_TAB } } }] },
+    });
+    titles.set(ITENS_TAB, res.data.replies![0].addSheet!.properties!.sheetId!);
+  }
   const missing = MONTHS.filter((m) => !titles.has(m));
   if (missing.length) {
     const res = await sheets.spreadsheets.batchUpdate({
@@ -391,12 +474,12 @@ export async function migrateStockSheetToMonthTabs(
   }
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
-    requestBody: { valueInputOption: "USER_ENTERED", data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...estoqueValues(year)] },
+    requestBody: { valueInputOption: "USER_ENTERED", data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...estoqueValues(year), ...itensValues(year)] },
   });
   const estoqueId = titles.get(ESTOQUE_TAB)!;
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
-    requestBody: { requests: [...MONTHS.flatMap((m) => monthTabRequests(titles.get(m)!)), ...estoqueRequests(estoqueId)] },
+    requestBody: { requests: [...MONTHS.flatMap((m) => monthTabRequests(titles.get(m)!)), ...estoqueRequests(estoqueId), ...itensRequests(titles.get(ITENS_TAB)!)] },
   });
   const oldCompras = titles.get("Compras");
   if (oldCompras !== undefined) {

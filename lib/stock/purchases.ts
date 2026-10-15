@@ -6,15 +6,16 @@ import { sameSupplierName } from "@/lib/transactions/findIdentical";
 import { downloadDocumentFile } from "@/lib/storage/supabase";
 import type { PurchaseItem } from "@/lib/ai/extractPurchaseItems";
 import { extractPurchaseHeader, type PurchaseHeader } from "@/lib/ai/extractPurchaseHeader";
-import { COMPRAS_TABLE_COLS, ESTOQUE_HEADERS, ESTOQUE_TAB, getOrCreateStockSheetForYear, isMonthTab } from "./stockSheet";
+import { buildItemRows, knownItemNamesFor } from "./itens";
+import { COMPRAS_TABLE_COLS, ESTOQUE_HEADERS, ESTOQUE_TAB, ITENS_HEADERS, ITENS_TAB, getOrCreateStockSheetForYear, isMonthTab } from "./stockSheet";
 import { lancamentoAutomaticoParaFornecedor } from "./lancAutomatico";
 import { STOCK_KIND_LABEL, stockKindForCategory, type StockKind } from "./stockRules";
 
 const MAX_ROWS = 20000;
 
-// A coluna ID (oculta) é a última da tabela: U nas abas de mês, L no Estoque.
+// A coluna ID (oculta) é a última da tabela: U nas abas de mês, M no Estoque.
 function idColLetter(tab: string): string {
-  return isMonthTab(tab) ? "U" : "L";
+  return isMonthTab(tab) ? "U" : "M";
 }
 function tableCols(tab: string): number {
   return isMonthTab(tab) ? COMPRAS_TABLE_COLS : ESTOQUE_HEADERS.length;
@@ -408,7 +409,7 @@ export async function writeEstoqueRows(purchaseNoteId: string): Promise<void> {
   const common = [month, brDate(note.issueDate), note.supplier.name, note.noteNumber ?? "", label];
   const rows: (string | number)[][] =
     items.length === 0
-      ? [[...common, "NÃO FOI POSSÍVEL LER OS ITENS — conferir a nota", "", "", "", "", note.remark ?? "", note.id]]
+      ? [[...common, "NÃO FOI POSSÍVEL LER OS ITENS — conferir a nota", "", "", "", "", note.remark ?? "", "", note.id]]
       : items.map((it, i) => [
           ...common,
           it.code ? `${it.description} (cód. ${it.code})` : it.description,
@@ -417,9 +418,35 @@ export async function writeEstoqueRows(purchaseNoteId: string): Promise<void> {
           it.unitPrice ?? "",
           it.totalPrice ?? "",
           i === 0 ? (note.remark ?? "") : "",
+          it.itemName ?? "",
           note.id,
         ]);
   await appendRows(spreadsheetId, ESTOQUE_TAB, token, rows);
+  await rebuildItemsTab(note.companyId, note.year).catch((err) => console.error("Falha ao atualizar a aba Itens:", err));
+}
+
+/** Nomes padrão de item já usados (a IA reaproveita pra não duplicar o item). */
+export async function knownItemNames(companyId: string, kind: StockKind): Promise<string[]> {
+  return knownItemNamesFor(companyId, kind);
+}
+
+/** Reescreve a aba Itens do ano inteira a partir das notas lidas (preço, variação, média de 3 meses). */
+export async function rebuildItemsTab(companyId: string, year: number): Promise<void> {
+  const stock = await prisma.stockSheet.findUnique({ where: { companyId_year: { companyId, year } } });
+  if (!stock) return;
+  const token = await companyToken(companyId);
+  const rows = await buildItemRows(companyId);
+  const { sheets } = getGoogleClientsForCompany(token);
+  await withTabLock(`stock:${stock.spreadsheetId}:${ITENS_TAB}`, async () => {
+    await sheets.spreadsheets.values.clear({ spreadsheetId: stock.spreadsheetId, range: `'${ITENS_TAB}'!A3:${String.fromCharCode(64 + ITENS_HEADERS.length)}${MAX_ROWS}` });
+    if (rows.length === 0) return;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: stock.spreadsheetId,
+      range: `'${ITENS_TAB}'!A3`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: rows },
+    });
+  });
 }
 
 /** Apaga a nota das duas abas e do banco (usado quando a nota é excluída). */
@@ -437,6 +464,7 @@ export async function removePurchaseForPage(documentPageId: string): Promise<voi
     console.error(`Falha ao limpar a nota ${note.id} da planilha de Compras e Estoque:`, err);
   }
   await prisma.purchaseNote.delete({ where: { id: note.id } }).catch(() => {});
+  if (note.stockKind) await rebuildItemsTab(note.companyId, note.year).catch((err) => console.error("Falha ao atualizar a aba Itens:", err));
 }
 
 /** Só remove se a nota não tem mais nenhum lançamento (excluir 1 parcela não apaga a compra). */

@@ -7,6 +7,8 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 export type PurchaseItem = {
   description: string;
+  itemName: string; // nome padrão do item (reaproveita um já conhecido) ou o tipo genérico (Zíper, Botão, Linha...)
+  generic: boolean; // true = só deu pra saber o tipo, não o modelo
   code: string | null;
   quantity: number | null;
   unit: string | null; // m, kg, un, cx, rolo, cone, l, par, jg, pct, sc, gl, outro
@@ -34,14 +36,20 @@ const OUTPUT_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["description", "code", "quantity", "unit", "unitPrice", "totalPrice"],
+        required: ["description", "itemName", "generic", "code", "quantity", "unit", "unitPrice", "totalPrice"],
         properties: {
           description: { type: "string", description: "Descrição do item exatamente como impressa na nota (cor, largura, composição, referência etc. fazem parte da descrição)." },
+          itemName: {
+            type: "string",
+            description:
+              "Nome PADRÃO do item, curto e sem código de nota, pra controle de estoque (ex: 'Tecido Luky Mescla Cinza', 'Zíper de aço N11 preto', 'Sal moído iodado'). Se for o mesmo produto de um item da lista de itens conhecidos (mesmo modelo/cor), copie o nome conhecido EXATAMENTE. Se só dá pra saber o TIPO e não o modelo (descrição vaga como 'ZIPER', 'BOTAO', 'LINHA'), use só o tipo genérico: 'Zíper', 'Botão', 'Linha', 'Etiqueta', 'Elástico', 'Fita' etc.",
+          },
+          generic: { type: "boolean", description: "true se itemName é só o tipo genérico (modelo não identificável); false se é um item específico identificável." },
           code: { type: ["string", "null"], description: "Código do produto na nota, se houver." },
           quantity: { type: ["number", "null"], description: "Quantidade como número (ponto decimal), na unidade da própria nota." },
           unit: {
             type: ["string", "null"],
-            description: "Unidade normalizada: m (metro/MT/MTS), kg, un (UN/UNID/PÇ/PC/PEÇA), cx, rolo, cone, l (litro/LT), par, jg, pct, sc (saco), gl (galão), ou outro texto curto se for diferente.",
+            description: "Unidade normalizada: m (metro/MT/MTS), kg, un (UN/UNID/PÇ/PC/PEÇA), milheiro (MI/MIL/MILH), cx, rolo, cone, l (litro/LT), par, jg, pct, sc (saco), gl (galão), ou outro texto curto se for diferente.",
           },
           unitPrice: { type: ["number", "null"], description: "Valor unitário em reais, como impresso (pode ter até 4 casas)." },
           totalPrice: { type: ["number", "null"], description: "Valor total do item, em reais, como impresso." },
@@ -65,7 +73,10 @@ const KIND_HINT: Record<StockKind, string> = {
     "Esta nota é de PRODUTO QUÍMICO. Quantidade normalmente em kg ou litros (l), às vezes em galão/tambor (use 'outro' e escreva na descrição) — respeite a unidade da nota.",
 };
 
-function buildSystemPrompt(kind: StockKind): string {
+function buildSystemPrompt(kind: StockKind, knownItems: string[]): string {
+  const known = knownItems.length
+    ? `\n\nItens JÁ CONHECIDOS desta empresa (use o nome exatamente igual quando for o mesmo produto):\n${knownItems.map((n) => `- ${n}`).join("\n")}`
+    : "";
   return `Você lê os ITENS de uma nota fiscal (DANFE/NF-e) ou nota de compra brasileira, pra alimentar o controle de estoque de uma confecção. ${KIND_HINT[kind]}
 
 Regras:
@@ -74,7 +85,22 @@ Regras:
 - Copie descrição, quantidade, unidade, valor unitário e valor total EXATAMENTE como impressos. Números em formato brasileiro (1.234,56) viram número com ponto decimal (1234.56). Nunca invente: se um campo não estiver legível, devolva null.
 - Ignore faturas/duplicatas (parcelas), dados de transporte e totais de impostos — isso não é item.
 - Confira: a soma dos valores totais dos itens deve bater com o "valor total dos produtos". Se não bater, releia as linhas antes de responder; se ainda não bater, explique em "remarks".
-- Datas e valores de pagamento NÃO fazem parte desta leitura.`;
+- Datas e valores de pagamento NÃO fazem parte desta leitura.
+- Para cada item, dê um itemName padrão: o mesmo produto sempre com o mesmo nome (mesmo modelo e cor = mesmo nome, mesmo escrito diferente na nota). Tecido: nome do tecido + cor (ex: 'Tecido Luky Mescla Cinza'). Aviamento: tipo + modelo/especificação principal (ex: 'Zíper de aço N11 preto'). Se a descrição não deixa claro o modelo, não invente: use só o tipo ('Zíper') e marque generic=true. Nunca misture dois produtos diferentes no mesmo nome.${known}`;
+}
+
+const UNIT_ALIASES: Record<string, string> = {
+  mi: "milheiro", mil: "milheiro", milh: "milheiro", millheiro: "milheiro",
+  mt: "m", mts: "m", metro: "m", metros: "m",
+  un: "un", und: "un", unid: "un", pc: "un", pç: "un", pca: "un", peca: "un", peça: "un",
+  lt: "l", litro: "l", litros: "l", kgs: "kg", quilo: "kg",
+};
+
+/** Unidade em forma única (MI e MILHEIRO viram a mesma coisa), pra somar e comparar preços. */
+function normalizeUnit(unit: string | null | undefined): string | null {
+  const u = unit?.trim().toLowerCase().replace(/./g, "");
+  if (!u) return null;
+  return UNIT_ALIASES[u] ?? u;
 }
 
 export async function extractPurchaseItems(params: {
@@ -82,6 +108,7 @@ export async function extractPurchaseItems(params: {
   mimeType: string;
   pageNumbers: number[]; // a página da nota + continuações
   kind: StockKind;
+  knownItems?: string[]; // nomes padrão já usados nesta empresa, pra não duplicar o item
 }): Promise<PurchaseItemsResult> {
   const pagesText = params.pageNumbers.join(", ");
   const stream = client.beta.messages.stream({
@@ -91,7 +118,7 @@ export async function extractPurchaseItems(params: {
     output_config: { effort: "high", format: { type: "json_schema", schema: OUTPUT_SCHEMA } },
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
-    system: buildSystemPrompt(params.kind),
+    system: buildSystemPrompt(params.kind, params.knownItems ?? []),
     messages: [
       {
         role: "user",
@@ -125,9 +152,11 @@ export async function extractPurchaseItems(params: {
     .filter((i) => i && typeof i.description === "string" && i.description.trim() !== "")
     .map((i) => ({
       description: i.description.trim(),
+      itemName: (typeof i.itemName === "string" && i.itemName.trim()) || i.description.trim(),
+      generic: i.generic === true,
       code: i.code?.trim() || null,
       quantity: Number.isFinite(i.quantity) ? i.quantity : null,
-      unit: i.unit?.trim() || null,
+      unit: normalizeUnit(i.unit),
       unitPrice: Number.isFinite(i.unitPrice) ? i.unitPrice : null,
       totalPrice: Number.isFinite(i.totalPrice) ? i.totalPrice : null,
     }));

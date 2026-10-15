@@ -3,7 +3,7 @@ import { NonRetriableError } from "inngest";
 import { prisma } from "@/lib/db/prisma";
 import { downloadDocumentFile } from "@/lib/storage/supabase";
 import { extractPurchaseItems } from "@/lib/ai/extractPurchaseItems";
-import { applyIssueDate, writeEstoqueRows } from "@/lib/stock/purchases";
+import { applyIssueDate, knownItemNames, writeEstoqueRows } from "@/lib/stock/purchases";
 import type { StockKind } from "@/lib/stock/stockRules";
 
 /**
@@ -34,11 +34,13 @@ export const captureStockItems = inngest.createFunction(
           .filter((p) => (p.rawExtraction as { duplicateOfPageNumber?: number | null }).duplicateOfPageNumber === page.pageNumber)
           .map((p) => p.pageNumber);
         const buffer = await downloadDocumentFile(document.storagePath);
+        const knownItems = await knownItemNames(note.companyId, note.stockKind as StockKind);
         return await extractPurchaseItems({
           fileBase64: buffer.toString("base64"),
           mimeType: document.mimeType,
           pageNumbers: [page.pageNumber, ...continuation].sort((a, b) => a - b),
           kind: note.stockKind as StockKind,
+          knownItems,
         });
       } catch (err) {
         await prisma.purchaseNote.update({ where: { id: note.id }, data: { itemsStatus: "ERROR" } });
