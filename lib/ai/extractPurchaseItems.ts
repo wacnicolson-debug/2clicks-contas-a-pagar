@@ -98,7 +98,7 @@ const UNIT_ALIASES: Record<string, string> = {
 
 /** Unidade em forma única (MI e MILHEIRO viram a mesma coisa), pra somar e comparar preços. */
 function normalizeUnit(unit: string | null | undefined): string | null {
-  const u = unit?.trim().toLowerCase().replace(/./g, "");
+  const u = unit?.trim().toLowerCase().replace(/\./g, "");
   if (!u) return null;
   return UNIT_ALIASES[u] ?? u;
 }

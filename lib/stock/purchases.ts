@@ -4,21 +4,20 @@ import { MONTHS } from "@/lib/sheets/provisionCompanySheet";
 import { inngest } from "@/lib/inngest/client";
 import { sameSupplierName } from "@/lib/transactions/findIdentical";
 import { downloadDocumentFile } from "@/lib/storage/supabase";
-import type { PurchaseItem } from "@/lib/ai/extractPurchaseItems";
 import { extractPurchaseHeader, type PurchaseHeader } from "@/lib/ai/extractPurchaseHeader";
-import { buildItemRows, knownItemNamesFor } from "./itens";
-import { COMPRAS_TABLE_COLS, ESTOQUE_HEADERS, ESTOQUE_TAB, ITENS_HEADERS, ITENS_TAB, getOrCreateStockSheetForYear, isMonthTab } from "./stockSheet";
+import { buildEstoqueRows, knownItemNamesFor } from "./itens";
+import { COMPRAS_TABLE_COLS, ITENS_HEADERS, ITENS_TAB, getOrCreateStockSheetForYear, isMonthTab } from "./stockSheet";
 import { lancamentoAutomaticoParaFornecedor } from "./lancAutomatico";
-import { STOCK_KIND_LABEL, stockKindForCategory, type StockKind } from "./stockRules";
+import { stockKindForCategory, type StockKind } from "./stockRules";
 
 const MAX_ROWS = 20000;
 
 // A coluna ID (oculta) é a última da tabela: U nas abas de mês, M no Estoque.
 function idColLetter(tab: string): string {
-  return isMonthTab(tab) ? "U" : "M";
+  return isMonthTab(tab) ? "U" : "A";
 }
-function tableCols(tab: string): number {
-  return isMonthTab(tab) ? COMPRAS_TABLE_COLS : ESTOQUE_HEADERS.length;
+function tableCols(): number {
+  return COMPRAS_TABLE_COLS;
 }
 
 // Duas notas gravando na mesma aba ao mesmo tempo não podem escolher a mesma
@@ -115,7 +114,7 @@ async function removeRowsById(spreadsheetId: string, tab: string, token: string,
         // linha inteira fosse apagada).
         requests: ranges.map((g) => ({
           deleteRange: {
-            range: { sheetId, startRowIndex: g.start, endRowIndex: g.end, startColumnIndex: 0, endColumnIndex: tableCols(tab) },
+            range: { sheetId, startRowIndex: g.start, endRowIndex: g.end, startColumnIndex: 0, endColumnIndex: tableCols() },
             shiftDimension: "ROWS",
           },
         })),
@@ -395,34 +394,11 @@ export async function writeComprasRow(purchaseNoteId: string, prev?: { year: num
   ]);
 }
 
-/** Grava (ou regrava) as linhas de itens de uma nota na aba Estoque. */
+/** Depois que os itens da nota foram lidos: atualiza a aba Estoque (um item por linha). */
 export async function writeEstoqueRows(purchaseNoteId: string): Promise<void> {
-  const note = await prisma.purchaseNote.findUnique({ where: { id: purchaseNoteId }, include: { supplier: true } });
+  const note = await prisma.purchaseNote.findUnique({ where: { id: purchaseNoteId } });
   if (!note || !note.stockKind || note.headerStatus !== "DONE") return;
-  const token = await companyToken(note.companyId);
-  const spreadsheetId = await getOrCreateStockSheetForYear(note.companyId, note.year);
-  await removeRowsById(spreadsheetId, ESTOQUE_TAB, token, note.id);
-
-  const items = (Array.isArray(note.items) ? note.items : []) as unknown as PurchaseItem[];
-  const month = MONTHS[note.monthDate.getUTCMonth()];
-  const label = STOCK_KIND_LABEL[note.stockKind as StockKind];
-  const common = [month, brDate(note.issueDate), note.supplier.name, note.noteNumber ?? "", label];
-  const rows: (string | number)[][] =
-    items.length === 0
-      ? [[...common, "NÃO FOI POSSÍVEL LER OS ITENS — conferir a nota", "", "", "", "", note.remark ?? "", "", note.id]]
-      : items.map((it, i) => [
-          ...common,
-          it.code ? `${it.description} (cód. ${it.code})` : it.description,
-          it.quantity ?? "",
-          it.unit ?? "",
-          it.unitPrice ?? "",
-          it.totalPrice ?? "",
-          i === 0 ? (note.remark ?? "") : "",
-          it.itemName ?? "",
-          note.id,
-        ]);
-  await appendRows(spreadsheetId, ESTOQUE_TAB, token, rows);
-  await rebuildItemsTab(note.companyId, note.year).catch((err) => console.error("Falha ao atualizar a aba Itens:", err));
+  await rebuildItemsTab(note.companyId, note.year);
 }
 
 /** Nomes padrão de item já usados (a IA reaproveita pra não duplicar o item). */
@@ -430,12 +406,12 @@ export async function knownItemNames(companyId: string, kind: StockKind): Promis
   return knownItemNamesFor(companyId, kind);
 }
 
-/** Reescreve a aba Itens do ano inteira a partir das notas lidas (preço, variação, média de 3 meses). */
+/** Reescreve a aba Estoque do ano inteira a partir das notas lidas (preço, variação, média de 3 meses). */
 export async function rebuildItemsTab(companyId: string, year: number): Promise<void> {
   const stock = await prisma.stockSheet.findUnique({ where: { companyId_year: { companyId, year } } });
   if (!stock) return;
   const token = await companyToken(companyId);
-  const rows = await buildItemRows(companyId);
+  const rows = await buildEstoqueRows(companyId);
   const { sheets } = getGoogleClientsForCompany(token);
   await withTabLock(`stock:${stock.spreadsheetId}:${ITENS_TAB}`, async () => {
     await sheets.spreadsheets.values.clear({ spreadsheetId: stock.spreadsheetId, range: `'${ITENS_TAB}'!A3:${String.fromCharCode(64 + ITENS_HEADERS.length)}${MAX_ROWS}` });
@@ -458,7 +434,6 @@ export async function removePurchaseForPage(documentPageId: string): Promise<voi
     if (stock && note.headerStatus === "DONE") {
       const token = await companyToken(note.companyId);
       await removeRowsById(stock.spreadsheetId, MONTHS[note.monthDate.getUTCMonth()], token, note.id);
-      await removeRowsById(stock.spreadsheetId, ESTOQUE_TAB, token, note.id);
     }
   } catch (err) {
     console.error(`Falha ao limpar a nota ${note.id} da planilha de Compras e Estoque:`, err);

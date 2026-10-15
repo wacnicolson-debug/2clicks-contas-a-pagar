@@ -4,7 +4,8 @@ import { getGoogleClientsForCompany } from "@/lib/sheets/client";
 import { MONTHS } from "@/lib/sheets/provisionCompanySheet";
 
 export const ESTOQUE_TAB = "Estoque";
-export const ITENS_TAB = "Itens";
+// Uma aba só de estoque: um item por linha (antes eram duas, Estoque e Itens).
+export const ITENS_TAB = ESTOQUE_TAB;
 
 // Planilha de COMPRAS: uma aba por mês, só notas fiscais, em ordem de emissão.
 // Pensada pra digitar a nota no Alterdata Fiscal: as 4 primeiras colunas são as
@@ -39,42 +40,26 @@ export const COMPRAS_TABLE_COLS = COMPRAS_HEADERS.length; // A..U
 // Resumo do mês ao lado da tabela: colunas X (rótulo) e Y (valor).
 const SUM_LABEL_COL = 23;
 
-export const ESTOQUE_HEADERS = [
+// Aba Estoque: cada item de cada nota numa linha (5 itens = 5 linhas), com o preço
+// anterior do mesmo item, a variação e a média dos 3 meses anteriores. Reescrita
+// inteira pelo app a cada nota de estoque.
+export const ITENS_HEADERS = [
   "Mês",
   "Data da nota",
   "Fornecedor",
   "Nº da nota",
-  "Categoria",
+  "Tipo",
   "Item",
+  "Descrição na nota",
+  "Genérico",
   "Qtd",
   "Un",
   "Valor unitário",
   "Valor do item",
-  "Observação",
-  "Item padrão",
-  "ID",
-];
-
-// Aba Itens: uma linha por item padrão, com última compra, variação e média dos
-// últimos 3 meses. Reescrita inteira pelo app a cada nota de estoque.
-export const ITENS_HEADERS = [
-  "Item",
-  "Tipo",
-  "Un",
-  "Genérico",
-  "Última compra",
-  "Fornecedor (última)",
-  "Qtd (última)",
-  "Último preço",
   "Preço anterior",
-  "Fornecedor (anterior)",
   "Variação",
-  "Preço médio 3 meses",
-  "Qtd 3 meses",
-  "Total 3 meses",
-  "Menor preço 3m",
-  "Maior preço 3m",
-  "Nº de compras",
+  "Média 3 meses anteriores",
+  "Observação",
 ];
 
 const MAX_ROWS = 20000;
@@ -83,61 +68,6 @@ const GREY = { red: 0.85, green: 0.85, blue: 0.85 };
 
 export function isMonthTab(tab: string): boolean {
   return (MONTHS as readonly string[]).includes(tab);
-}
-
-/** Resumo mensal fixo ao lado da tabela do Estoque (colunas N a R), uma linha por mês. */
-export function summaryValues(): (string | number)[][] {
-  const valueCol = "J";
-  const catCol = "E";
-  const rows: (string | number)[][] = [];
-  rows.push(["Resumo por mês", "", "", "", ""]);
-  rows.push(["Mês", "Total dos itens", "Tecidos", "Aviamentos", "Produtos químicos"]);
-  for (let i = 0; i < 12; i++) {
-    const r = i + 3;
-    rows.push([
-      MONTHS[i],
-      `=SUMIFS($${valueCol}:$${valueCol};$A:$A;$N${r})`,
-      `=SUMIFS($${valueCol}:$${valueCol};$A:$A;$N${r};$${catCol}:$${catCol};"*tecido*")`,
-      `=SUMIFS($${valueCol}:$${valueCol};$A:$A;$N${r};$${catCol}:$${catCol};"*aviamento*")`,
-      `=SUMIFS($${valueCol}:$${valueCol};$A:$A;$N${r};$${catCol}:$${catCol};"*qu?mic*")`,
-    ]);
-  }
-  rows.push(["Ano", "=SUM(O3:O14)", "=SUM(P3:P14)", "=SUM(Q3:Q14)", "=SUM(R3:R14)"]);
-  return rows;
-}
-
-/** Formatação do resumo mensal ao lado da tabela do Estoque (colunas N a R). */
-export function summaryFormatRequests(sheetId: number): sheets_v4.Schema$Request[] {
-  return [
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 13, endColumnIndex: 18 },
-        cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 12 }, backgroundColor: GREEN } },
-        fields: "userEnteredFormat(textFormat,backgroundColor)",
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 13, endColumnIndex: 18 },
-        cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: GREY } },
-        fields: "userEnteredFormat(textFormat,backgroundColor)",
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 2, endRowIndex: 15, startColumnIndex: 14, endColumnIndex: 18 },
-        cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: '"R$" #,##0.00' } } },
-        fields: "userEnteredFormat.numberFormat",
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 14, endRowIndex: 15, startColumnIndex: 13, endColumnIndex: 18 },
-        cell: { userEnteredFormat: { textFormat: { bold: true } } },
-        fields: "userEnteredFormat.textFormat",
-      },
-    },
-  ];
 }
 
 function widthRequests(sheetId: number, widths: Record<number, number>): sheets_v4.Schema$Request[] {
@@ -302,76 +232,21 @@ function itensRequests(sheetId: number): sheets_v4.Schema$Request[] {
     },
     { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 2 } }, fields: "gridProperties.frozenRowCount" } },
     { setBasicFilter: { filter: { range: { sheetId, startRowIndex: 1, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: n } } } },
-    fmt(4, "DATE", "dd/mm/yyyy"),
-    fmt(6, "NUMBER", "#,##0.00"),
-    fmt(7, "CURRENCY", PRICE_PATTERN),
-    fmt(8, "CURRENCY", PRICE_PATTERN),
-    fmt(10, "PERCENT", "0.0%"),
-    fmt(11, "CURRENCY", PRICE_PATTERN),
-    fmt(12, "NUMBER", "#,##0.00"),
-    fmt(13, "CURRENCY", '"R$" #,##0.00'),
+    fmt(1, "DATE", "dd/mm/yyyy"),
+    fmt(8, "NUMBER", "#,##0.00"),
+    fmt(10, "CURRENCY", PRICE_PATTERN),
+    fmt(11, "CURRENCY", '"R$" #,##0.00'),
+    fmt(12, "CURRENCY", PRICE_PATTERN),
+    fmt(13, "PERCENT", "0.0%"),
     fmt(14, "CURRENCY", PRICE_PATTERN),
-    fmt(15, "CURRENCY", PRICE_PATTERN),
-    ...widthRequests(sheetId, { 0: 300, 1: 130, 2: 50, 3: 80, 4: 100, 5: 230, 6: 90, 7: 105, 8: 105, 9: 230, 10: 80, 11: 120, 12: 95, 13: 110, 14: 105, 15: 105, 16: 90 }),
+    ...widthRequests(sheetId, { 0: 85, 1: 95, 2: 250, 3: 100, 4: 110, 5: 290, 6: 330, 7: 75, 8: 80, 9: 60, 10: 105, 11: 105, 12: 105, 13: 80, 14: 140, 15: 280 }),
   ];
 }
 
 export function itensValues(year: number): { range: string; values: (string | number)[][] }[] {
   return [
-    { range: `'${ITENS_TAB}'!A1`, values: [[`ITENS ${year} — último preço, variação e preço médio dos últimos 3 meses por item (atualiza a cada nota)`]] },
+    { range: `'${ITENS_TAB}'!A1`, values: [[`ESTOQUE ${year} — itens de cada nota, com preço anterior, variação e média dos 3 meses anteriores (atualiza a cada nota)`]] },
     { range: `'${ITENS_TAB}'!A2`, values: [ITENS_HEADERS] },
-  ];
-}
-
-function estoqueRequests(sheetId: number): sheets_v4.Schema$Request[] {
-  const n = ESTOQUE_HEADERS.length;
-  return [
-    { mergeCells: { range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: n }, mergeType: "MERGE_ALL" } },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
-        cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 12 }, backgroundColor: GREEN } },
-        fields: "userEnteredFormat(textFormat,backgroundColor)",
-      },
-    },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: n },
-        cell: { userEnteredFormat: { textFormat: { bold: true }, backgroundColor: GREY } },
-        fields: "userEnteredFormat(textFormat,backgroundColor)",
-      },
-    },
-    { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 2 } }, fields: "gridProperties.frozenRowCount" } },
-    { setBasicFilter: { filter: { range: { sheetId, startRowIndex: 1, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: n } } } },
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: 1, endColumnIndex: 2 },
-        cell: { userEnteredFormat: { numberFormat: { type: "DATE", pattern: "dd/mm/yyyy" } } },
-        fields: "userEnteredFormat.numberFormat",
-      },
-    },
-    // (a coluna do ID já foi a L; desoculta caso a planilha seja de antes do "Item padrão")
-    { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 11, endIndex: 12 }, properties: { hiddenByUser: false }, fields: "hiddenByUser" } },
-    { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: n - 1, endIndex: n }, properties: { hiddenByUser: true }, fields: "hiddenByUser" } },
-    ...summaryFormatRequests(sheetId),
-    moneyFormat(sheetId, 8),
-    moneyFormat(sheetId, 9),
-    {
-      repeatCell: {
-        range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: 6, endColumnIndex: 7 },
-        cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "#,##0.00" } } },
-        fields: "userEnteredFormat.numberFormat",
-      },
-    },
-    ...widthRequests(sheetId, { 0: 90, 1: 95, 2: 260, 3: 110, 4: 150, 5: 330, 6: 80, 7: 50, 8: 110, 9: 110, 10: 240, 11: 260, 13: 125, 14: 125, 15: 125, 16: 125, 17: 125 }),
-  ];
-}
-
-export function estoqueValues(year: number): { range: string; values: (string | number)[][] }[] {
-  return [
-    { range: `'${ESTOQUE_TAB}'!A1`, values: [[`ESTOQUE ${year} — só matéria-prima (tecidos e aviamentos) e produtos químicos, item a item`]] },
-    { range: `'${ESTOQUE_TAB}'!A2`, values: [ESTOQUE_HEADERS] },
-    { range: `'${ESTOQUE_TAB}'!N1`, values: summaryValues() },
   ];
 }
 
@@ -384,7 +259,7 @@ export async function provisionStockSheet(
   const created = await sheets.spreadsheets.create({
     requestBody: {
       properties: { title: `Compras e Estoque — ${companyName} — ${year}`, locale: "pt_BR" },
-      sheets: [...MONTHS.map((m) => ({ properties: { title: m } })), { properties: { title: ESTOQUE_TAB } }, { properties: { title: ITENS_TAB } }],
+      sheets: [...MONTHS.map((m) => ({ properties: { title: m } })), { properties: { title: ESTOQUE_TAB } }],
     },
   });
   const spreadsheetId = created.data.spreadsheetId;
@@ -396,13 +271,13 @@ export async function provisionStockSheet(
     spreadsheetId,
     requestBody: {
       valueInputOption: "USER_ENTERED",
-      data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...estoqueValues(year), ...itensValues(year)],
+      data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...itensValues(year)],
     },
   });
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: {
-      requests: [...MONTHS.flatMap((m) => monthTabRequests(idOf(m))), ...estoqueRequests(idOf(ESTOQUE_TAB)), ...itensRequests(idOf(ITENS_TAB))],
+      requests: [...MONTHS.flatMap((m) => monthTabRequests(idOf(m))), ...itensRequests(idOf(ESTOQUE_TAB))],
     },
   });
   return spreadsheetId;
@@ -440,7 +315,7 @@ export async function migrateStockSheetToMonthTabs(
   spreadsheetId: string,
   googleRefreshToken: string,
   year: number,
-  opts: { recreateMonths?: boolean } = {}
+  opts: { recreateMonths?: boolean; recreateEstoque?: boolean } = {}
 ): Promise<void> {
   const { sheets } = getGoogleClientsForCompany(googleRefreshToken);
   const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
@@ -454,6 +329,17 @@ export async function migrateStockSheetToMonthTabs(
       requestBody: { requests: stale.map((m) => ({ deleteSheet: { sheetId: titles.get(m)! } })) },
     });
     stale.forEach((m) => titles.delete(m));
+  }
+  // Estoque virou uma aba só (um item por linha): apaga a antiga (e a "Itens" da versão anterior) e recria.
+  if (opts.recreateEstoque) {
+    const old = [ESTOQUE_TAB, "Itens"].filter((t) => titles.has(t));
+    if (old.length) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId,
+        requestBody: { requests: old.map((t) => ({ deleteSheet: { sheetId: titles.get(t)! } })) },
+      });
+      old.forEach((t) => titles.delete(t));
+    }
   }
   if (!titles.has(ITENS_TAB)) {
     const res = await sheets.spreadsheets.batchUpdate({
@@ -474,12 +360,11 @@ export async function migrateStockSheetToMonthTabs(
   }
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
-    requestBody: { valueInputOption: "USER_ENTERED", data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...estoqueValues(year), ...itensValues(year)] },
+    requestBody: { valueInputOption: "USER_ENTERED", data: [...MONTHS.flatMap((_, i) => monthTabValues(i, year)), ...itensValues(year)] },
   });
-  const estoqueId = titles.get(ESTOQUE_TAB)!;
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
-    requestBody: { requests: [...MONTHS.flatMap((m) => monthTabRequests(titles.get(m)!)), ...estoqueRequests(estoqueId), ...itensRequests(titles.get(ITENS_TAB)!)] },
+    requestBody: { requests: [...MONTHS.flatMap((m) => monthTabRequests(titles.get(m)!)), ...itensRequests(titles.get(ITENS_TAB)!)] },
   });
   const oldCompras = titles.get("Compras");
   if (oldCompras !== undefined) {

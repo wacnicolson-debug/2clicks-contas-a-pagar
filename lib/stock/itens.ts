@@ -1,19 +1,8 @@
 import { prisma } from "@/lib/db/prisma";
 import { normalizeText } from "@/lib/utils/normalizeText";
 import type { PurchaseItem } from "@/lib/ai/extractPurchaseItems";
+import { MONTHS } from "@/lib/sheets/provisionCompanySheet";
 import { STOCK_KIND_LABEL, type StockKind } from "./stockRules";
-
-type Line = {
-  kind: StockKind;
-  name: string;
-  generic: boolean;
-  unit: string;
-  date: Date;
-  supplier: string;
-  qty: number | null;
-  unitPrice: number | null;
-  total: number | null;
-};
 
 function brDate(d: Date): string {
   return `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
@@ -40,70 +29,108 @@ export async function knownItemNamesFor(companyId: string, kind: StockKind): Pro
   return [...names.values()].sort((a, b) => a.localeCompare(b, "pt-BR")).slice(0, 400);
 }
 
+type Line = {
+  key: string; // tipo | item padrão | unidade
+  date: Date;
+  order: number; // desempate: ordem de chegada da nota e posição do item
+  monthLabel: string;
+  supplier: string;
+  noteNumber: string;
+  kind: StockKind;
+  item: PurchaseItem;
+  qty: number | null;
+  unitPrice: number | null;
+  total: number | null;
+  remark: string;
+  first: boolean; // primeira linha da nota (leva a observação)
+};
+
 /**
- * Uma linha por item padrão (e unidade): última compra, preço anterior,
- * variação e estatísticas dos últimos 3 meses (contados até hoje).
- * Linhas "genéricas" (só o tipo: Zíper, Botão...) ficam marcadas.
+ * Uma linha por item de cada nota (5 itens = 5 linhas), em ordem de data.
+ * Em cada linha: preço anterior do mesmo item (mesma unidade), variação e a
+ * média ponderada das compras dos 3 meses anteriores a ela.
  */
-export async function buildItemRows(companyId: string, now = new Date()): Promise<(string | number)[][]> {
+export async function buildEstoqueRows(companyId: string): Promise<(string | number)[][]> {
   const notes = await prisma.purchaseNote.findMany({
     where: { companyId, headerStatus: "DONE", itemsStatus: "DONE", stockKind: { not: null } },
     include: { supplier: { select: { name: true } } },
+    orderBy: { createdAt: "asc" },
   });
-  const groups = new Map<string, Line[]>();
+
+  const lines: Line[] = [];
+  let order = 0;
   for (const n of notes) {
     const date = n.issueDate ?? n.monthDate;
-    for (const it of (Array.isArray(n.items) ? n.items : []) as unknown as PurchaseItem[]) {
-      const name = (it.itemName || it.description || "").trim();
-      if (!name) continue;
+    const items = (Array.isArray(n.items) ? n.items : []) as unknown as PurchaseItem[];
+    const kind = n.stockKind as StockKind;
+    const base = {
+      date,
+      monthLabel: MONTHS[date.getUTCMonth()],
+      supplier: n.supplier.name,
+      noteNumber: n.noteNumber ?? "",
+      kind,
+      remark: n.remark ?? "",
+    };
+    if (items.length === 0) {
+      // não conseguiu ler os itens: avisa na própria linha pra conferir a nota
+      lines.push({ ...base, key: `x${order}`, order: order++, item: { description: "NÃO FOI POSSÍVEL LER OS ITENS — conferir a nota", itemName: "", generic: false, code: null, quantity: null, unit: null, unitPrice: null, totalPrice: null }, qty: null, unitPrice: null, total: null, first: true });
+      continue;
+    }
+    items.forEach((it, i) => {
       const qty = typeof it.quantity === "number" ? it.quantity : null;
       const total = typeof it.totalPrice === "number" ? it.totalPrice : null;
       let unitPrice = typeof it.unitPrice === "number" ? it.unitPrice : null;
       if (unitPrice === null && qty && total !== null) unitPrice = total / qty;
-      const unit = (it.unit ?? "").trim();
-      const line: Line = { kind: n.stockKind as StockKind, name, generic: it.generic === true, unit, date, supplier: n.supplier.name, qty, unitPrice, total };
-      const key = `${line.kind}|${normalizeText(name)}|${normalizeText(unit)}`;
-      groups.set(key, [...(groups.get(key) ?? []), line]);
-    }
+      const name = (it.itemName || it.description || "").trim();
+      lines.push({
+        ...base,
+        key: `${kind}|${normalizeText(name)}|${normalizeText(it.unit ?? "")}`,
+        order: order++,
+        item: it,
+        qty,
+        unitPrice,
+        total,
+        first: i === 0,
+      });
+    });
   }
 
-  const since = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 3, now.getUTCDate()));
-  const kindOrder: Record<string, number> = { TECIDO: 0, AVIAMENTO: 1, QUIMICO: 2 };
-  const out = [...groups.values()]
-    .map((lines) => {
-      lines.sort((a, b) => a.date.getTime() - b.date.getTime());
-      const last = lines[lines.length - 1];
-      const prev = lines.length > 1 ? lines[lines.length - 2] : null;
-      const win = lines.filter((l) => l.date >= since);
-      const priced = win.filter((l) => l.qty && l.total !== null);
-      const sumQty = priced.reduce((s, l) => s + (l.qty ?? 0), 0);
-      const sumTotal = priced.reduce((s, l) => s + (l.total ?? 0), 0);
-      const prices = win.map((l) => l.unitPrice).filter((p): p is number => p !== null);
-      const variation = prev && prev.unitPrice && last.unitPrice !== null ? (last.unitPrice - prev.unitPrice) / prev.unitPrice : null;
-      return {
-        kind: last.kind,
-        name: last.name,
-        row: [
-          last.name,
-          STOCK_KIND_LABEL[last.kind],
-          last.unit,
-          last.generic ? "genérico" : "",
-          brDate(last.date),
-          last.supplier,
-          last.qty ?? "",
-          last.unitPrice !== null ? round(last.unitPrice, 4) : "",
-          prev?.unitPrice != null ? round(prev.unitPrice, 4) : "",
-          prev ? prev.supplier : "",
-          variation !== null ? round(variation, 4) : "",
-          sumQty > 0 ? round(sumTotal / sumQty, 4) : prices.length ? round(prices.reduce((a, b) => a + b, 0) / prices.length, 4) : "",
-          win.length ? round(win.reduce((s, l) => s + (l.qty ?? 0), 0), 3) : "",
-          win.length ? round(win.reduce((s, l) => s + (l.total ?? 0), 0)) : "",
-          prices.length ? round(Math.min(...prices), 4) : "",
-          prices.length ? round(Math.max(...prices), 4) : "",
-          lines.length,
-        ] as (string | number)[],
-      };
-    })
-    .sort((a, b) => kindOrder[a.kind] - kindOrder[b.kind] || a.name.localeCompare(b.name, "pt-BR"));
-  return out.map((o) => o.row);
+  lines.sort((a, b) => a.date.getTime() - b.date.getTime() || a.order - b.order);
+
+  const rows: (string | number)[][] = [];
+  const history = new Map<string, Line[]>();
+  for (const l of lines) {
+    const before = history.get(l.key) ?? [];
+    const prev = before.length ? before[before.length - 1] : null;
+    const since = new Date(Date.UTC(l.date.getUTCFullYear(), l.date.getUTCMonth() - 3, l.date.getUTCDate()));
+    const win = before.filter((p) => p.date >= since);
+    const priced = win.filter((p) => p.qty && p.total !== null);
+    const sumQty = priced.reduce((s, p) => s + (p.qty ?? 0), 0);
+    const sumTotal = priced.reduce((s, p) => s + (p.total ?? 0), 0);
+    const prices = win.map((p) => p.unitPrice).filter((p): p is number => p !== null);
+    const avg = sumQty > 0 ? sumTotal / sumQty : prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null;
+    const variation = prev?.unitPrice && l.unitPrice !== null ? (l.unitPrice - prev.unitPrice) / prev.unitPrice : null;
+
+    const it = l.item;
+    rows.push([
+      l.monthLabel,
+      brDate(l.date),
+      l.supplier,
+      l.noteNumber,
+      STOCK_KIND_LABEL[l.kind],
+      it.itemName || "",
+      it.code ? `${it.description} (cód. ${it.code})` : it.description,
+      it.generic ? "genérico" : "",
+      l.qty ?? "",
+      it.unit ?? "",
+      l.unitPrice !== null ? round(l.unitPrice, 4) : "",
+      l.total !== null ? round(l.total) : "",
+      prev?.unitPrice != null ? round(prev.unitPrice, 4) : "",
+      variation !== null ? round(variation, 4) : "",
+      avg !== null ? round(avg, 4) : "",
+      l.first ? l.remark : "",
+    ]);
+    if (!l.key.startsWith("x")) history.set(l.key, [...before, l]);
+  }
+  return rows;
 }
