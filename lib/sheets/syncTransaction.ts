@@ -5,6 +5,7 @@ import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
 import { PAID_LOG_TAB, RECEBIMENTOS_TAB, recebimentosMonthBlockRows } from "./provisionCompanySheet";
 import { toBRDateString } from "@/lib/utils/formatDateBR";
 import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
+import { capturePurchaseForTransaction } from "@/lib/stock/purchases";
 import {
   APP_COLUMN_COUNT,
   FIRST_DATA_ROW,
@@ -47,6 +48,24 @@ const PAYMENT_METHOD_LABEL: Record<string, string> = {
  * de edição.
  */
 export async function syncTransactionToSheet(
+  transactionId: string,
+  options?: { skipDuplicateGuard?: boolean }
+): Promise<{ duplicateOf: string | null }> {
+  const result = await syncTransactionCore(transactionId, options);
+  // Planilha de Compras e Estoque: toda nota lançada vira UMA linha em Compras
+  // (e, se for matéria-prima/químico, os itens vão pra Estoque). Nunca derruba
+  // nem atrasa o lançamento em si: falha aqui só vai pro log.
+  if (!result.duplicateOf) {
+    try {
+      await capturePurchaseForTransaction(transactionId);
+    } catch (err) {
+      console.error(`Falha ao registrar a compra do lançamento ${transactionId}:`, err);
+    }
+  }
+  return result;
+}
+
+async function syncTransactionCore(
   transactionId: string,
   options?: { skipDuplicateGuard?: boolean }
 ): Promise<{ duplicateOf: string | null }> {

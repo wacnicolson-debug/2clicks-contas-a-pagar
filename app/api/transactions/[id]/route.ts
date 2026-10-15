@@ -11,6 +11,7 @@ import {
 import { normalizeText } from "@/lib/utils/normalizeText";
 import { deleteTransactionEverywhere } from "@/lib/transactions/deleteTransaction";
 import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
+import { capturePurchaseForTransaction } from "@/lib/stock/purchases";
 
 type PatchBody = {
   categoryName?: string;
@@ -172,6 +173,14 @@ export async function PATCH(
     console.error("Falha ao atualizar a planilha depois de salvar a edição:", err);
     sheetError = err instanceof Error ? err.message : "erro desconhecido";
     await prisma.transaction.update({ where: { id: updated.id }, data: { sheetSyncStatus: "PENDING" } });
+  }
+
+  // Categoria editada pra uma de estoque (matéria-prima/químico) depois do
+  // lançamento: passa a ler os itens da nota pra aba Estoque.
+  try {
+    await capturePurchaseForTransaction(updated.id);
+  } catch (err) {
+    console.error("Falha ao registrar a compra depois da edição:", err);
   }
 
   const finalRef = await prisma.transaction.findUnique({

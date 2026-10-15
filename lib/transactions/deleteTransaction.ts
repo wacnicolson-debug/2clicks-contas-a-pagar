@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { clearTransactionFromSheet, rebuildDayBlock } from "@/lib/sheets/syncTransaction";
+import { removePurchaseIfOrphan } from "@/lib/stock/purchases";
 
 /**
  * Exclusão completa de um lançamento: limpa a linha na planilha, apaga do
@@ -26,6 +27,13 @@ export async function deleteTransactionEverywhere(
     console.error(`Falha ao limpar a planilha ao excluir o lançamento ${transaction.id}:`, err);
   }
   await prisma.transaction.delete({ where: { id: transaction.id } });
+
+  // Era a última parcela da nota: a compra sai também das abas Compras/Estoque.
+  try {
+    await removePurchaseIfOrphan(transaction.documentPageId);
+  } catch (err) {
+    console.error(`Falha ao limpar a compra da nota ${transaction.documentPageId}:`, err);
+  }
 
   // Um lançamento excluído é sinal de que o "perfil aprendido" desse
   // fornecedor errou em algo — reseta pra ele voltar a perguntar tudo na

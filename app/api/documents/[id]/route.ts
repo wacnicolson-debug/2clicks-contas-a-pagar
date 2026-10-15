@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import type { ExtractedPage } from "@/lib/ai/extractDocument";
 import { clearTransactionFromSheet } from "@/lib/sheets/syncTransaction";
+import { removePurchaseForPage } from "@/lib/stock/purchases";
 
 export async function GET(
   _request: NextRequest,
@@ -101,6 +102,16 @@ export async function DELETE(
         defaultCategoryId: null,
       },
     });
+  }
+
+  // Compras/Estoque: as notas deste arquivo saem das duas abas.
+  const pages = await prisma.documentPage.findMany({ where: { documentId: id }, select: { id: true } });
+  for (const p of pages) {
+    try {
+      await removePurchaseForPage(p.id);
+    } catch (err) {
+      console.error(`Falha ao limpar a compra da página ${p.id}:`, err);
+    }
   }
 
   await prisma.bankStatementLine.deleteMany({ where: { documentId: id } });

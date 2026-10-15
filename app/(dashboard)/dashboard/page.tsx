@@ -28,7 +28,10 @@ export default async function DashboardPage({
 
   const company = await prisma.company.findUniqueOrThrow({
     where: { id: session.companyId },
-    include: { sheets: { orderBy: { year: "desc" } } },
+    include: {
+      sheets: { orderBy: { year: "desc" } },
+      stockSheets: { orderBy: { year: "desc" } },
+    },
   });
 
   // Existe um token guardado, mas ele ainda funciona? Pode ter expirado ou
@@ -157,6 +160,17 @@ export default async function DashboardPage({
                 </a>
                 <RemoveSheetButton id={sheet.id} year={sheet.year} />
               </span>
+            ))}
+            {company.stockSheets.map((sheet) => (
+              <a
+                key={sheet.id}
+                href={`https://docs.google.com/spreadsheets/d/${sheet.spreadsheetId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-emerald-700 underline"
+              >
+                Compras e Estoque {sheet.year} ↗
+              </a>
             ))}
           </div>
         )}
