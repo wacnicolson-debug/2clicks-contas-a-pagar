@@ -5,30 +5,38 @@ import { MONTHS } from "@/lib/sheets/provisionCompanySheet";
 
 export const ESTOQUE_TAB = "Estoque";
 
-// Planilha de COMPRAS (uma aba por mês, só notas fiscais, em ordem de emissão),
-// pensada pra importar no Alterdata. As 4 primeiras colunas são as que a
-// contabilidade pediu; o resto é o que a escrituração de entrada costuma exigir.
-// A última (ID) fica oculta: é por ela que o app acha as linhas de uma nota pra
-// apagar ou mover, mesmo se a planilha for reordenada.
+// Planilha de COMPRAS: uma aba por mês, só notas fiscais, em ordem de emissão.
+// Pensada pra digitar a nota no Alterdata Fiscal: as 4 primeiras colunas são as
+// que a contabilidade pediu e as seguintes seguem a ordem da lista de notas de
+// entrada do Fiscal (espécie, série, modelo, número, ICMS...). "Entrada" fica em
+// branco pra quem digita. A última (ID) fica oculta: é por ela que o app acha as
+// linhas de uma nota pra apagar ou mover, mesmo se a planilha for reordenada.
 export const COMPRAS_HEADERS = [
-  "Data da nota",
+  "Emissão",
   "Fornecedor",
   "CFOP",
-  "Valor",
-  "CNPJ do fornecedor",
-  "Nº da nota",
+  "Valor contábil",
+  "Entrada",
+  "Espécie",
   "Série",
-  "Valor dos produtos",
-  "Frete",
-  "IPI",
+  "Modelo",
+  "Número",
   "Base ICMS",
-  "ICMS",
-  "Categoria",
+  "% ICMS",
+  "Valor ICMS",
+  "IPI",
+  "Frete",
+  "CNPJ do fornecedor",
   "Chave de acesso",
+  "Categoria",
   "Observação",
+  "Lanç. automático",
+  "Lançado",
   "ID",
 ];
-export const COMPRAS_TABLE_COLS = COMPRAS_HEADERS.length; // A..P
+export const COMPRAS_TABLE_COLS = COMPRAS_HEADERS.length; // A..U
+// Resumo do mês ao lado da tabela: colunas X (rótulo) e Y (valor).
+const SUM_LABEL_COL = 23;
 
 export const ESTOQUE_HEADERS = [
   "Mês",
@@ -145,14 +153,15 @@ export function monthTabValues(monthIndex: number, year: number): { range: strin
     { range: `'${tab}'!A1`, values: [[`${tab.toUpperCase()} ${year} — NOTAS FISCAIS DE COMPRA (em ordem de emissão)`]] },
     { range: `'${tab}'!A2`, values: [COMPRAS_HEADERS] },
     {
-      range: `'${tab}'!R1`,
+      range: `'${tab}'!X1`,
       values: [
         ["Resumo do mês", ""],
         ["Total das notas", "=SUM($D$3:$D)"],
         ["Nº de notas", "=COUNTA($B$3:$B)"],
-        ["Tecidos", '=SUMIFS($D$3:$D;$M$3:$M;"*tecido*")'],
-        ["Aviamentos", '=SUMIFS($D$3:$D;$M$3:$M;"*aviamento*")'],
-        ["Produtos químicos", '=SUMIFS($D$3:$D;$M$3:$M;"*qu?mic*")'],
+        ["Lançadas no Alterdata", "=COUNTIF($T$3:$T;TRUE)"],
+        ["Tecidos", '=SUMIFS($D$3:$D;$Q$3:$Q;"*tecido*")'],
+        ["Aviamentos", '=SUMIFS($D$3:$D;$Q$3:$Q;"*aviamento*")'],
+        ["Produtos químicos", '=SUMIFS($D$3:$D;$Q$3:$Q;"*qu?mic*")'],
       ],
     },
   ];
@@ -160,7 +169,15 @@ export function monthTabValues(monthIndex: number, year: number): { range: strin
 
 export function monthTabRequests(sheetId: number): sheets_v4.Schema$Request[] {
   const n = COMPRAS_TABLE_COLS;
-  const reqs: sheets_v4.Schema$Request[] = [
+  const dateFmt = (col: number): sheets_v4.Schema$Request => ({
+    repeatCell: {
+      range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: col, endColumnIndex: col + 1 },
+      cell: { userEnteredFormat: { numberFormat: { type: "DATE", pattern: "dd/mm/yyyy" } } },
+      fields: "userEnteredFormat.numberFormat",
+    },
+  });
+  const sumCol = SUM_LABEL_COL;
+  return [
     { mergeCells: { range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: n }, mergeType: "MERGE_ALL" } },
     {
       repeatCell: {
@@ -178,50 +195,58 @@ export function monthTabRequests(sheetId: number): sheets_v4.Schema$Request[] {
     },
     { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 2 } }, fields: "gridProperties.frozenRowCount" } },
     { setBasicFilter: { filter: { range: { sheetId, startRowIndex: 1, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: n } } } },
+    dateFmt(0), // Emissão
+    dateFmt(4), // Entrada
+    // CFOP, série, modelo, número, CNPJ e chave são identificadores: ficam como texto
+    // (senão a planilha come zeros à esquerda e troca a chave por notação científica).
+    ...[2, 6, 7, 8, 14, 15, 18].map((c) => textFormat(sheetId, c)),
+    ...[3, 9, 11, 12, 13].map((c) => moneyFormat(sheetId, c)),
     {
       repeatCell: {
-        range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: 1 },
-        cell: { userEnteredFormat: { numberFormat: { type: "DATE", pattern: "dd/mm/yyyy" } } },
+        range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: 10, endColumnIndex: 11 },
+        cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.00" } } },
         fields: "userEnteredFormat.numberFormat",
       },
     },
-    // CFOP, CNPJ, nº, série e chave são identificadores: ficam como texto
-    // (senão a planilha come zeros à esquerda e troca a chave por notação científica).
-    ...[2, 4, 5, 6, 13].map((c) => textFormat(sheetId, c)),
-    ...[3, 7, 8, 9, 10, 11].map((c) => moneyFormat(sheetId, c)),
+    // Lançado: caixinha pra marcar a nota já digitada no Alterdata
+    {
+      setDataValidation: {
+        range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: 19, endColumnIndex: 20 },
+        rule: { condition: { type: "BOOLEAN" }, strict: true },
+      },
+    },
     { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: n - 1, endIndex: n }, properties: { hiddenByUser: true }, fields: "hiddenByUser" } },
-    ...widthRequests(sheetId, { 0: 95, 1: 280, 2: 110, 3: 115, 4: 150, 5: 90, 6: 55, 7: 120, 8: 90, 9: 90, 10: 100, 11: 100, 12: 190, 13: 330, 14: 300, 16: 30, 17: 130, 18: 120 }),
-    // resumo do mês (R:S)
+    ...widthRequests(sheetId, { 0: 95, 1: 280, 2: 65, 3: 115, 4: 95, 5: 65, 6: 55, 7: 65, 8: 90, 9: 105, 10: 70, 11: 105, 12: 85, 13: 85, 14: 150, 15: 330, 16: 190, 17: 300, 18: 100, 19: 70, 21: 30, 23: 160, 24: 120 }),
+    // resumo do mês (X:Y)
     {
       repeatCell: {
-        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 17, endColumnIndex: 19 },
+        range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: sumCol, endColumnIndex: sumCol + 2 },
         cell: { userEnteredFormat: { textFormat: { bold: true, fontSize: 12 }, backgroundColor: GREEN } },
         fields: "userEnteredFormat(textFormat,backgroundColor)",
       },
     },
     {
       repeatCell: {
-        range: { sheetId, startRowIndex: 1, endRowIndex: 6, startColumnIndex: 17, endColumnIndex: 18 },
+        range: { sheetId, startRowIndex: 1, endRowIndex: 7, startColumnIndex: sumCol, endColumnIndex: sumCol + 1 },
         cell: { userEnteredFormat: { textFormat: { bold: true } } },
         fields: "userEnteredFormat.textFormat",
       },
     },
     {
       repeatCell: {
-        range: { sheetId, startRowIndex: 1, endRowIndex: 6, startColumnIndex: 18, endColumnIndex: 19 },
+        range: { sheetId, startRowIndex: 1, endRowIndex: 7, startColumnIndex: sumCol + 1, endColumnIndex: sumCol + 2 },
         cell: { userEnteredFormat: { numberFormat: { type: "CURRENCY", pattern: '"R$" #,##0.00' } } },
         fields: "userEnteredFormat.numberFormat",
       },
     },
     {
       repeatCell: {
-        range: { sheetId, startRowIndex: 2, endRowIndex: 3, startColumnIndex: 18, endColumnIndex: 19 },
+        range: { sheetId, startRowIndex: 2, endRowIndex: 4, startColumnIndex: sumCol + 1, endColumnIndex: sumCol + 2 },
         cell: { userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0" } } },
         fields: "userEnteredFormat.numberFormat",
       },
     },
   ];
-  return reqs;
 }
 
 function estoqueRequests(sheetId: number): sheets_v4.Schema$Request[] {
@@ -335,11 +360,25 @@ export async function getOrCreateStockSheetForYear(companyId: string, year: numb
  * Leva uma planilha criada no formato antigo (uma aba "Compras" só) pro formato
  * novo: 12 abas de mês e o Estoque com o resumo próprio. Usada uma vez.
  */
-export async function migrateStockSheetToMonthTabs(spreadsheetId: string, googleRefreshToken: string, year: number): Promise<void> {
+export async function migrateStockSheetToMonthTabs(
+  spreadsheetId: string,
+  googleRefreshToken: string,
+  year: number,
+  opts: { recreateMonths?: boolean } = {}
+): Promise<void> {
   const { sheets } = getGoogleClientsForCompany(googleRefreshToken);
   const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
   const titles = new Map((meta.data.sheets ?? []).map((s) => [s.properties!.title!, s.properties!.sheetId!]));
 
+  // O formato das abas de mês mudou: apaga as existentes e recria (só vale pra planilha sem notas ainda).
+  const stale = MONTHS.filter((m) => titles.has(m));
+  if (stale.length && opts.recreateMonths) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: stale.map((m) => ({ deleteSheet: { sheetId: titles.get(m)! } })) },
+    });
+    stale.forEach((m) => titles.delete(m));
+  }
   const missing = MONTHS.filter((m) => !titles.has(m));
   if (missing.length) {
     const res = await sheets.spreadsheets.batchUpdate({

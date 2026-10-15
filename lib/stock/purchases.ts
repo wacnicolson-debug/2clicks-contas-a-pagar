@@ -7,13 +7,14 @@ import { downloadDocumentFile } from "@/lib/storage/supabase";
 import type { PurchaseItem } from "@/lib/ai/extractPurchaseItems";
 import { extractPurchaseHeader, type PurchaseHeader } from "@/lib/ai/extractPurchaseHeader";
 import { COMPRAS_TABLE_COLS, ESTOQUE_HEADERS, ESTOQUE_TAB, getOrCreateStockSheetForYear, isMonthTab } from "./stockSheet";
+import { lancamentoAutomaticoParaFornecedor } from "./lancAutomatico";
 import { STOCK_KIND_LABEL, stockKindForCategory, type StockKind } from "./stockRules";
 
 const MAX_ROWS = 20000;
 
-// A coluna ID (oculta) é a última da tabela: P nas abas de mês, L no Estoque.
+// A coluna ID (oculta) é a última da tabela: U nas abas de mês, L no Estoque.
 function idColLetter(tab: string): string {
-  return isMonthTab(tab) ? "P" : "L";
+  return isMonthTab(tab) ? "U" : "L";
 }
 function tableCols(tab: string): number {
   return isMonthTab(tab) ? COMPRAS_TABLE_COLS : ESTOQUE_HEADERS.length;
@@ -49,7 +50,7 @@ async function appendRows(
   spreadsheetId: string,
   tab: string,
   token: string,
-  rows: (string | number)[][]
+  rows: (string | number | boolean)[][]
 ): Promise<void> {
   if (rows.length === 0) return;
   await withTabLock(`stock:${spreadsheetId}:${tab}`, async () => {
@@ -137,6 +138,22 @@ async function companyToken(companyId: string): Promise<string> {
   const c = await prisma.company.findUniqueOrThrow({ where: { id: companyId } });
   if (!c.googleRefreshToken) throw new Error(`Empresa ${companyId} ainda não conectou o Google Sheets.`);
   return c.googleRefreshToken;
+}
+
+/** CFOP de ENTRADA a partir do CFOP impresso na nota do fornecedor (5→1, 6→2, 7→3). */
+export function entryCfop(cfop: string): string {
+  const map: Record<string, string> = { "5": "1", "6": "2", "7": "3" };
+  return map[cfop[0]] ? map[cfop[0]] + cfop.slice(1) : cfop;
+}
+
+/** Lê se a nota já está marcada como "Lançado" (coluna T) na aba. */
+async function readLancadoRow(spreadsheetId: string, tab: string, token: string, id: string): Promise<boolean> {
+  const { sheets } = getGoogleClientsForCompany(token);
+  const ids = await readIds(spreadsheetId, tab, token);
+  const row = ids.findIndex((v, i) => v === id && i >= 2);
+  if (row < 0) return false;
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: `'${tab}'!T${row + 1}`, valueRenderOption: "UNFORMATTED_VALUE" });
+  return res.data.values?.[0]?.[0] === true;
 }
 
 function formatCnpj(d: string | null | undefined): string {
@@ -333,31 +350,45 @@ export async function writeComprasRow(purchaseNoteId: string, prev?: { year: num
   const token = await companyToken(note.companyId);
   const h = (note.header ?? {}) as Partial<PurchaseHeader>;
 
+  let lancadoAnterior = false;
   if (prev) {
     const old = await prisma.stockSheet.findUnique({ where: { companyId_year: { companyId: note.companyId, year: prev.year } } });
-    if (old) await removeRowsById(old.spreadsheetId, MONTHS[prev.monthDate.getUTCMonth()], token, note.id);
+    if (old) {
+      lancadoAnterior = await readLancadoRow(old.spreadsheetId, MONTHS[prev.monthDate.getUTCMonth()], token, note.id);
+      await removeRowsById(old.spreadsheetId, MONTHS[prev.monthDate.getUTCMonth()], token, note.id);
+    }
   }
   const spreadsheetId = await getOrCreateStockSheetForYear(note.companyId, note.year);
   const tab = MONTHS[note.monthDate.getUTCMonth()];
+  const lancado = lancadoAnterior || (await readLancadoRow(spreadsheetId, tab, token, note.id));
   await removeRowsById(spreadsheetId, tab, token, note.id); // idempotente: nunca duas linhas da mesma nota
   const blank = (v: number | null | undefined) => (v === null || v === undefined ? "" : v);
+  const lancAuto = lancamentoAutomaticoParaFornecedor(note.supplier.name);
+  const cfop = (h.cfops ?? []).map(entryCfop).join(" / ");
+  const pct = h.icmsBase && h.icmsValue ? Math.round((h.icmsValue / h.icmsBase) * 10000) / 100 : "";
+  const modelo = h.docType === "NFSE" ? "" : h.accessKey ? h.accessKey.slice(20, 22) : "55";
   await appendRows(spreadsheetId, tab, token, [
     [
       brDate(note.issueDate),
       note.supplier.name,
-      (h.cfops ?? []).join(" / "),
+      cfop,
       h.noteTotal ?? Number(note.totalAmount),
-      formatCnpj(h.supplierCnpj),
-      note.noteNumber ?? "",
+      "", // Entrada: quem digita no Alterdata preenche
+      h.docType === "NFSE" ? "NFSe" : "NFe",
       h.series ?? "",
-      blank(h.productsTotal),
-      blank(h.freight),
-      blank(h.ipi),
+      modelo,
+      note.noteNumber ?? "",
       blank(h.icmsBase),
+      pct,
       blank(h.icmsValue),
-      note.categoryName ?? "",
+      blank(h.ipi),
+      blank(h.freight),
+      formatCnpj(h.supplierCnpj),
       h.accessKey ?? "",
+      note.categoryName ?? "",
       note.remark ?? "",
+      lancAuto,
+      lancado,
       note.id,
     ],
   ]);
