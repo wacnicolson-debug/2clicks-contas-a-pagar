@@ -411,10 +411,36 @@ export async function rebuildItemsTab(companyId: string, year: number): Promise<
   const stock = await prisma.stockSheet.findUnique({ where: { companyId_year: { companyId, year } } });
   if (!stock) return;
   const token = await companyToken(companyId);
-  const rows = await buildEstoqueRows(companyId);
+  const { rows, bands } = await buildEstoqueRows(companyId, year);
   const { sheets } = getGoogleClientsForCompany(token);
   await withTabLock(`stock:${stock.spreadsheetId}:${ITENS_TAB}`, async () => {
     await sheets.spreadsheets.values.clear({ spreadsheetId: stock.spreadsheetId, range: `'${ITENS_TAB}'!A3:${String.fromCharCode(64 + ITENS_HEADERS.length)}${MAX_ROWS}` });
+    const sheetId = await sheetIdOf(stock.spreadsheetId, ITENS_TAB, token);
+    if (sheetId !== null) {
+      // zera o destaque das faixas antigas (as linhas mudam de lugar a cada nota) e destaca as novas
+      const cols = ITENS_HEADERS.length;
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: stock.spreadsheetId,
+        requestBody: {
+          requests: [
+            {
+              repeatCell: {
+                range: { sheetId, startRowIndex: 2, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: cols },
+                cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 1, blue: 1 }, textFormat: { bold: false } } },
+                fields: "userEnteredFormat(backgroundColor,textFormat)",
+              },
+            },
+            ...bands.map((b) => ({
+              repeatCell: {
+                range: { sheetId, startRowIndex: 2 + b, endRowIndex: 3 + b, startColumnIndex: 0, endColumnIndex: cols },
+                cell: { userEnteredFormat: { backgroundColor: { red: 0.85, green: 0.92, blue: 0.88 }, textFormat: { bold: true } } },
+                fields: "userEnteredFormat(backgroundColor,textFormat)",
+              },
+            })),
+          ],
+        },
+      });
+    }
     if (rows.length === 0) return;
     await sheets.spreadsheets.values.update({
       spreadsheetId: stock.spreadsheetId,

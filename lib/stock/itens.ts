@@ -48,9 +48,14 @@ type Line = {
 /**
  * Uma linha por item de cada nota (5 itens = 5 linhas), em ordem de data.
  * Em cada linha: preço anterior do mesmo item (mesma unidade), variação e a
- * média ponderada das compras dos 3 meses anteriores a ela.
+ * média ponderada das compras dos 3 meses anteriores a ela. Só aparecem as linhas
+ * do ano da planilha (o histórico de preço usa todos os anos). Cada mês começa
+ * com uma faixa de título com o total do mês (índices em `bands`).
  */
-export async function buildEstoqueRows(companyId: string): Promise<(string | number)[][]> {
+export async function buildEstoqueRows(
+  companyId: string,
+  year: number
+): Promise<{ rows: (string | number)[][]; bands: number[] }> {
   const notes = await prisma.purchaseNote.findMany({
     where: { companyId, headerStatus: "DONE", itemsStatus: "DONE", stockKind: { not: null } },
     include: { supplier: { select: { name: true } } },
@@ -98,6 +103,12 @@ export async function buildEstoqueRows(companyId: string): Promise<(string | num
   lines.sort((a, b) => a.date.getTime() - b.date.getTime() || a.order - b.order);
 
   const rows: (string | number)[][] = [];
+  const bands: number[] = [];
+  let currentMonth = -1;
+  const monthTotals = new Map<number, number>();
+  for (const l of lines) {
+    if (l.date.getUTCFullYear() === year) monthTotals.set(l.date.getUTCMonth(), (monthTotals.get(l.date.getUTCMonth()) ?? 0) + (l.total ?? 0));
+  }
   const history = new Map<string, Line[]>();
   for (const l of lines) {
     const before = history.get(l.key) ?? [];
@@ -111,6 +122,18 @@ export async function buildEstoqueRows(companyId: string): Promise<(string | num
     const avg = sumQty > 0 ? sumTotal / sumQty : prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null;
     const variation = prev?.unitPrice && l.unitPrice !== null ? (l.unitPrice - prev.unitPrice) / prev.unitPrice : null;
 
+    if (l.date.getUTCFullYear() !== year) {
+      if (!l.key.startsWith("x")) history.set(l.key, [...before, l]);
+      continue;
+    }
+    const month = l.date.getUTCMonth();
+    if (month !== currentMonth) {
+      if (rows.length > 0) rows.push(new Array(16).fill("")); // linha em branco entre os meses
+      bands.push(rows.length);
+      // apóstrofo: força texto (senão a planilha entende "AGOSTO 2026" como data)
+      rows.push([`'${MONTHS[month].toUpperCase()} ${year}`, "", "", "", "", "", "", "", "", "", "Total do mês", round(monthTotals.get(month) ?? 0), "", "", "", ""]);
+      currentMonth = month;
+    }
     const it = l.item;
     rows.push([
       l.monthLabel,
@@ -132,5 +155,5 @@ export async function buildEstoqueRows(companyId: string): Promise<(string | num
     ]);
     if (!l.key.startsWith("x")) history.set(l.key, [...before, l]);
   }
-  return rows;
+  return { rows, bands };
 }
