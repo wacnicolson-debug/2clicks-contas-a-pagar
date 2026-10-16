@@ -131,8 +131,12 @@ export async function buildEstoqueRows(
     if (l.date.getUTCFullYear() === year) monthTotals.set(l.date.getUTCMonth(), (monthTotals.get(l.date.getUTCMonth()) ?? 0) + (l.total ?? 0));
   }
   const history = new Map<string, Line[]>();
+  const saldo = new Map<string, number>(); // estoque acumulado do item (saldo inicial + entradas), todos os anos
   for (const l of lines) {
     const before = history.get(l.key) ?? [];
+    // sem quantidade informada e sem saldo anterior: deixa o saldo em branco (não é zero, é desconhecido)
+    const running = l.key.startsWith("x") || (l.qty === null && !saldo.has(l.key)) ? null : (saldo.get(l.key) ?? 0) + (l.qty ?? 0);
+    if (running !== null) saldo.set(l.key, running);
     const prev = before.length ? before[before.length - 1] : null;
     const since = new Date(Date.UTC(l.date.getUTCFullYear(), l.date.getUTCMonth() - 3, l.date.getUTCDate()));
     const win = before.filter((p) => p.date >= since);
@@ -149,10 +153,10 @@ export async function buildEstoqueRows(
     }
     const month = l.date.getUTCMonth();
     if (month !== currentMonth) {
-      if (rows.length > 0) rows.push(new Array(16).fill("")); // linha em branco entre os meses
+      if (rows.length > 0) rows.push(new Array(17).fill("")); // linha em branco entre os meses
       bands.push(rows.length);
       // apóstrofo: força texto (senão a planilha entende "AGOSTO 2026" como data)
-      rows.push([`'${MONTHS[month].toUpperCase()} ${year}`, "", "", "", "", "", "", "", "", "", "Total do mês", round(monthTotals.get(month) ?? 0), "", "", "", ""]);
+      rows.push([`'${MONTHS[month].toUpperCase()} ${year}`, "", "", "", "", "", "", "", "", "", "", "Total do mês", round(monthTotals.get(month) ?? 0), "", "", "", ""]);
       currentMonth = month;
     }
     const it = l.item;
@@ -167,6 +171,7 @@ export async function buildEstoqueRows(
       it.generic ? "genérico" : "",
       l.qty ?? "",
       it.unit ?? "",
+      running !== null ? round(running, 3) : "",
       l.unitPrice !== null ? round(l.unitPrice, 4) : "",
       l.total !== null ? round(l.total) : "",
       prev?.unitPrice != null ? round(prev.unitPrice, 4) : "",

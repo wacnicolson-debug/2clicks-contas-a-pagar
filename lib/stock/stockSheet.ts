@@ -54,6 +54,7 @@ export const ITENS_HEADERS = [
   "Genérico",
   "Qtd",
   "Un",
+  "Saldo do item",
   "Valor unitário",
   "Valor do item",
   "Preço anterior",
@@ -234,12 +235,13 @@ function itensRequests(sheetId: number): sheets_v4.Schema$Request[] {
     { setBasicFilter: { filter: { range: { sheetId, startRowIndex: 1, endRowIndex: MAX_ROWS, startColumnIndex: 0, endColumnIndex: n } } } },
     fmt(1, "DATE", "dd/mm/yyyy"),
     fmt(8, "NUMBER", "#,##0.00"),
-    fmt(10, "CURRENCY", PRICE_PATTERN),
-    fmt(11, "CURRENCY", '"R$" #,##0.00'),
-    fmt(12, "CURRENCY", PRICE_PATTERN),
-    fmt(13, "PERCENT", "0.0%"),
-    fmt(14, "CURRENCY", PRICE_PATTERN),
-    ...widthRequests(sheetId, { 0: 85, 1: 95, 2: 250, 3: 100, 4: 110, 5: 290, 6: 330, 7: 75, 8: 80, 9: 60, 10: 105, 11: 105, 12: 105, 13: 80, 14: 140, 15: 280 }),
+    fmt(10, "NUMBER", "#,##0.00"),
+    fmt(11, "CURRENCY", PRICE_PATTERN),
+    fmt(12, "CURRENCY", '"R$" #,##0.00'),
+    fmt(13, "CURRENCY", PRICE_PATTERN),
+    fmt(14, "PERCENT", "0.0%"),
+    fmt(15, "CURRENCY", PRICE_PATTERN),
+    ...widthRequests(sheetId, { 0: 85, 1: 95, 2: 250, 3: 100, 4: 110, 5: 290, 6: 330, 7: 75, 8: 80, 9: 60, 10: 100, 11: 105, 12: 105, 13: 105, 14: 80, 15: 140, 16: 280 }),
   ];
 }
 
