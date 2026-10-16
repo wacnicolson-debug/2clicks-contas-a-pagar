@@ -219,7 +219,13 @@ export async function rebuildDayBlock(
   year: number,
   monthName: string,
   day: number,
-  options?: { excludeTransactionId?: string; retried?: boolean }
+  options?: {
+    excludeTransactionId?: string;
+    retried?: boolean;
+    // Lançamento recém-editado (nome do beneficiário e/ou valor): a linha antiga da planilha
+    // ainda tem o nome/valor de antes — é por eles que a marcação (PAGO, cor...) é achada.
+    previous?: { id: string; supplierName: string; amount: number };
+  }
 ): Promise<void> {
   const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId } });
   if (!company.googleRefreshToken) return;
@@ -383,9 +389,15 @@ export async function rebuildDayBlock(
     const isNewRow: boolean[] = [];
     for (const t of blockTransactions) {
       const amount = Number(t.amount);
-      const matchIndex = oldRows.findIndex(
+      let matchIndex = oldRows.findIndex(
         (row, i) => !consumed.has(i) && rowMatchesTransaction(row, t.supplier.name, amount)
       );
+      if (matchIndex < 0 && options?.previous && options.previous.id === t.id) {
+        const prev = options.previous;
+        matchIndex = oldRows.findIndex(
+          (row, i) => !consumed.has(i) && rowMatchesTransaction(row, prev.supplierName, prev.amount)
+        );
+      }
       if (matchIndex < 0) {
         checkboxRows.push([false, false]);
         excluirRows.push([false]);
@@ -838,7 +850,8 @@ export function refMatchesDestination(sheetCellRef: string | null, destinationKe
  */
 export async function updateTransactionRowInPlace(
   transactionId: string,
-  previousAmount: number
+  previousAmount: number,
+  previousSupplierName?: string
 ): Promise<{ row: number } | null> {
   const t = await prisma.transaction.findUniqueOrThrow({
     where: { id: transactionId },
@@ -909,7 +922,7 @@ export async function updateTransactionRowInPlace(
       range,
       valueRenderOption: "UNFORMATTED_VALUE",
     });
-    if (!rowMatchesTransaction(current.data.values?.[0], t.supplier.name, previousAmount)) return null;
+    if (!rowMatchesTransaction(current.data.values?.[0], previousSupplierName ?? t.supplier.name, previousAmount)) return null;
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range,
@@ -921,7 +934,9 @@ export async function updateTransactionRowInPlace(
     // bloco inteiro ordenado em vez de regravar só esta linha no lugar
     // antigo, senão a ordem crescente quebraria a cada edição de valor.
     const day = t.dueDate.getUTCDate();
-    await rebuildDayBlock(t.companyId, t.dueDate.getUTCFullYear(), tabName, day);
+    await rebuildDayBlock(t.companyId, t.dueDate.getUTCFullYear(), tabName, day, {
+      previous: { id: t.id, supplierName: previousSupplierName ?? t.supplier.name, amount: previousAmount },
+    });
     const refreshed = await prisma.transaction.findUnique({
       where: { id: t.id },
       select: { sheetCellRef: true },

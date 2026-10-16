@@ -11,9 +11,11 @@ import {
 import { normalizeText } from "@/lib/utils/normalizeText";
 import { deleteTransactionEverywhere } from "@/lib/transactions/deleteTransaction";
 import { findIdenticalTransaction } from "@/lib/transactions/findIdentical";
-import { capturePurchaseForTransaction } from "@/lib/stock/purchases";
+import { capturePurchaseForTransaction, syncPurchaseSupplier } from "@/lib/stock/purchases";
+import { resolveSupplier } from "@/lib/suppliers/resolveSupplier";
 
 type PatchBody = {
+  supplierName?: string; // corrige o beneficiário (o lançamento passa pro fornecedor desse nome)
   categoryName?: string;
   amount?: number;
   dueDate?: string; // AAAA-MM-DD
@@ -65,6 +67,19 @@ export async function PATCH(
     }
   }
 
+  // Beneficiário corrigido: acha o fornecedor com esse nome (ou cria). Só este lançamento muda de fornecedor.
+  let supplierId = transaction.supplierId;
+  let supplierName = transaction.supplier.name;
+  let supplierTaxId = transaction.supplier.taxId;
+  const newName = typeof body.supplierName === "string" ? body.supplierName.trim() : "";
+  if (newName && normalizeText(newName) !== normalizeText(transaction.supplier.name)) {
+    const resolved = await resolveSupplier({ companyId: session.companyId, nameRaw: newName, taxId: null });
+    supplierId = resolved.id;
+    supplierName = resolved.name;
+    supplierTaxId = resolved.taxId;
+  }
+  const supplierChanged = supplierId !== transaction.supplierId;
+
   const amount =
     typeof body.amount === "number" && body.amount > 0 ? body.amount : Number(transaction.amount);
   const dueDate = body.dueDate ? new Date(body.dueDate) : transaction.dueDate;
@@ -75,9 +90,9 @@ export async function PATCH(
     kind: transaction.kind,
     dueDate,
     amount,
-    supplierId: transaction.supplierId,
-    supplierName: transaction.supplier.name,
-    supplierTaxId: transaction.supplier.taxId,
+    supplierId,
+    supplierName,
+    supplierTaxId,
     excludeId: transaction.id,
   });
   if (identical) {
@@ -149,6 +164,7 @@ export async function PATCH(
   const updated = await prisma.transaction.update({
     where: { id: transaction.id },
     data: {
+      supplierId,
       categoryId,
       amount,
       dueDate,
@@ -164,7 +180,7 @@ export async function PATCH(
   let action: "updated" | "moved" | "not_found" = "not_found";
   try {
     if (inPlace) {
-      action = (await updateTransactionRowInPlace(updated.id, previousAmount)) ? "updated" : "not_found";
+      action = (await updateTransactionRowInPlace(updated.id, previousAmount, transaction.supplier.name)) ? "updated" : "not_found";
     } else if (removedFromOldPlace) {
       // A linha antiga foi achada e tirada — a MESMA linha passa pro novo lugar.
       await syncTransactionToSheet(updated.id, { skipDuplicateGuard: true });
@@ -174,6 +190,14 @@ export async function PATCH(
     console.error("Falha ao atualizar a planilha depois de salvar a edição:", err);
     sheetError = err instanceof Error ? err.message : "erro desconhecido";
     await prisma.transaction.update({ where: { id: updated.id }, data: { sheetSyncStatus: "PENDING" } });
+  }
+
+  if (supplierChanged) {
+    try {
+      await syncPurchaseSupplier(updated.documentPageId, supplierId);
+    } catch (err) {
+      console.error("Falha ao acertar o beneficiário nas planilhas de Compras/Estoque:", err);
+    }
   }
 
   // Categoria editada pra uma de estoque (matéria-prima/químico) depois do

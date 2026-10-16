@@ -27,6 +27,7 @@ export function EditTransactionForm({
   const router = useRouter();
   const isCliente = transaction.kind === "RECEIVABLE";
 
+  const [supplierName, setSupplierName] = useState(transaction.supplierName);
   const [categoryName, setCategoryName] = useState(transaction.categoryName);
   const [amount, setAmount] = useState(transaction.amount.toFixed(2));
   const [dueDate, setDueDate] = useState(transaction.dueDate);
@@ -45,6 +46,7 @@ export function EditTransactionForm({
     setError(null);
 
     const body: Record<string, unknown> = {
+      supplierName,
       categoryName,
       amount: parseFloat(amount.replace(",", ".")),
       dueDate,
@@ -177,6 +179,22 @@ export function EditTransactionForm({
           <h1 className="text-lg font-semibold mb-1">Editar lançamento — {transaction.supplierName}</h1>
           <p className="text-sm text-neutral-500">
             Corrige o que estiver errado e salva — atualiza a planilha automaticamente.
+          </p>
+        </div>
+
+        <div>
+          <label className="block text-sm font-medium mb-1" htmlFor="supplierName">
+            {isCliente ? "Cliente" : "Beneficiário"}
+          </label>
+          <input
+            id="supplierName"
+            value={supplierName}
+            onChange={(e) => setSupplierName(e.target.value)}
+            className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
+            required
+          />
+          <p className="text-xs text-neutral-500 mt-1">
+            Corrige só este lançamento. Se já existir um fornecedor com esse nome, ele é usado; senão é criado.
           </p>
         </div>
 

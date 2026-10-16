@@ -468,6 +468,16 @@ export async function removePurchaseForPage(documentPageId: string): Promise<voi
   if (note.stockKind) await rebuildItemsTab(note.companyId, note.year).catch((err) => console.error("Falha ao atualizar a aba Itens:", err));
 }
 
+/** O beneficiário do lançamento foi corrigido: a nota de compra e as linhas das planilhas passam pro nome novo. */
+export async function syncPurchaseSupplier(documentPageId: string | null | undefined, supplierId: string): Promise<void> {
+  if (!documentPageId) return;
+  const note = await prisma.purchaseNote.findUnique({ where: { documentPageId } });
+  if (!note || note.supplierId === supplierId) return;
+  await prisma.purchaseNote.update({ where: { id: note.id }, data: { supplierId } });
+  if (note.headerStatus === "DONE") await writeComprasRow(note.id);
+  if (note.stockKind && note.itemsStatus === "DONE") await rebuildItemsTab(note.companyId, note.year);
+}
+
 /** Só remove se a nota não tem mais nenhum lançamento (excluir 1 parcela não apaga a compra). */
 export async function removePurchaseIfOrphan(documentPageId: string | null | undefined): Promise<void> {
   if (!documentPageId) return;
