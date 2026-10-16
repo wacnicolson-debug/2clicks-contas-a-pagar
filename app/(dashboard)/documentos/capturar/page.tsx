@@ -6,6 +6,9 @@ import { useRouter } from "next/navigation";
 type Status = "idle" | "camera" | "uploading" | "error";
 type FlashMode = "auto" | "on" | "off";
 
+// Fotos tiradas com a câmera aberta: sobem em segundo plano, uma de cada vez não é preciso esperar.
+type Shot = { id: number; status: "uploading" | "done" | "error"; documentId?: string; error?: string };
+
 // ImageCapture (foto em resolução máxima + modo de flash) ainda não está nos tipos do TypeScript.
 type PhotoCapabilities = { fillLightMode?: string[] };
 type ImageCaptureLike = {
@@ -43,6 +46,9 @@ export default function CapturarPage() {
   const [fillLight, setFillLight] = useState<string[]>([]); // modos de flash que a câmera declara (fillLightMode)
   const [hasTorch, setHasTorch] = useState<boolean | null>(null); // lanterna controlável pelo navegador
   const [ready, setReady] = useState(false);
+  const [shooting, setShooting] = useState(false); // tirando a foto agora (lanterna + captura), antes de liberar o botão de novo
+  const [shots, setShots] = useState<Shot[]>([]);
+  const shotId = useRef(0);
 
   function chooseFlash(mode: FlashMode) {
     setFlashMode(mode);
@@ -83,6 +89,30 @@ export default function CapturarPage() {
       setStatus("error");
       setError("Falha ao enviar a foto.");
     }
+  }
+
+  async function sendInBackground(file: File) {
+    const id = ++shotId.current;
+    setShots((prev) => [...prev, { id, status: "uploading" }]);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await fetch("/api/documents/upload", { method: "POST", body: formData });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setShots((prev) => prev.map((x) => (x.id === id ? { ...x, status: "error", error: body.error ?? "Falha ao enviar." } : x)));
+        return;
+      }
+      setShots((prev) => prev.map((x) => (x.id === id ? { ...x, status: "done", documentId: body.documentId } : x)));
+    } catch {
+      setShots((prev) => prev.map((x) => (x.id === id ? { ...x, status: "error", error: "Falha ao enviar." } : x)));
+    }
+  }
+
+  function finish() {
+    stopCamera();
+    const sent = shots.filter((x) => x.status === "done" && x.documentId);
+    router.push(sent.length === 1 ? `/documentos/${sent[0].documentId}` : "/dashboard");
   }
 
   // Câmera do app: é a única forma de a página controlar o flash.
@@ -162,6 +192,8 @@ export default function CapturarPage() {
   }
 
   async function takePhoto() {
+    if (shooting) return;
+    setShooting(true);
     const plan = planFlash();
     let torchOn = false;
     try {
@@ -191,11 +223,13 @@ export default function CapturarPage() {
       if (!blob) throw new Error("sem imagem");
       if (torchOn) await setTorch(false);
       torchOn = false;
-      await upload(new File([blob], `nota-${Date.now()}.jpg`, { type: blob.type || "image/jpeg" }));
+      // a câmera continua aberta: a foto sobe em segundo plano e dá pra tirar a próxima
+      void sendInBackground(new File([blob], `nota-${Date.now()}.jpg`, { type: blob.type || "image/jpeg" }));
     } catch {
       if (torchOn) await setTorch(false);
-      setStatus("error");
-      setError("Não consegui tirar a foto. Tente de novo.");
+      setShots((prev) => [...prev, { id: ++shotId.current, status: "error", error: "Não consegui tirar a foto. Tente de novo." }]);
+    } finally {
+      setShooting(false);
     }
   }
 
@@ -268,10 +302,35 @@ export default function CapturarPage() {
             <button
               type="button"
               onClick={takePhoto}
-              className="w-full bg-emerald-700 text-white rounded-md py-4 text-base font-medium"
+              disabled={shooting || !ready}
+              className="w-full bg-emerald-700 text-white rounded-md py-4 text-base font-medium disabled:opacity-60"
             >
-              Tirar foto
+              {shooting ? "Tirando…" : "Tirar foto"}
             </button>
+
+            {shots.length > 0 && (
+              <ul className="mt-3 space-y-1 text-left">
+                {shots.slice(-5).map((x) => (
+                  <li key={x.id} className="flex items-center justify-between text-sm border border-neutral-100 rounded-md px-3 py-1.5 bg-white">
+                    <span>Foto {x.id}</span>
+                    <span className={x.status === "error" ? "text-red-600" : x.status === "done" ? "text-emerald-700" : "text-neutral-500"}>
+                      {x.status === "uploading" ? "Enviando…" : x.status === "done" ? "Enviada ✓" : x.error}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {shots.some((x) => x.status === "done") && (
+              <button
+                type="button"
+                onClick={finish}
+                disabled={shots.some((x) => x.status === "uploading")}
+                className="w-full mt-3 border border-emerald-700 text-emerald-700 rounded-md py-3 text-sm font-medium disabled:opacity-50"
+              >
+                {shots.some((x) => x.status === "uploading") ? "Enviando…" : `Concluir (${shots.filter((x) => x.status === "done").length} enviada${shots.filter((x) => x.status === "done").length > 1 ? "s" : ""})`}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -288,6 +347,7 @@ export default function CapturarPage() {
               onClick={() => {
                 stopCamera();
                 setStatus("idle");
+                setShots([]);
               }}
               className="w-full text-sm text-neutral-500 py-2"
             >
