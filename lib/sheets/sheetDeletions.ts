@@ -123,7 +123,9 @@ async function ensureCheckboxColumn(
                 startRowIndex: HEADER_ROWS,
                 endRowIndex: LAST_BLOCK_ROW1,
                 startColumnIndex: 0,
-                endColumnIndex: columnIndex + 1,
+                // vai até o fim da aba: senão a cor pintada à mão (que passa da coluna da caixinha)
+                // aparece do lado direito mesmo com a linha marcada
+                endColumnIndex: Math.max(columnCount, columnIndex + 1),
               },
             ],
             booleanRule: {

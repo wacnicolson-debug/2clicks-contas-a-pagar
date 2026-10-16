@@ -321,10 +321,19 @@ export async function rebuildDayBlock(
   // leva pra posição nova, quem é novo nasce sem cor. A cor das caixinhas
   // (formatação condicional) não é afetada — ela já segue a marcação.
   let fillInfo: Awaited<ReturnType<typeof readRowFills>> | null = null;
+  let fallbackSheetId: number | null = null;
   try {
     fillInfo = await readRowFills(sheets, spreadsheetId, monthName, supplierCol);
   } catch (err) {
-    console.error(`Não consegui ler as cores das linhas de ${monthName} (segue sem mexer nelas):`, err);
+    console.error(`Não consegui ler as cores das linhas de ${monthName} (só limpa a cor dos lançamentos novos):`, err);
+    // Sem ler as cores não dá pra levar a cor de cada lançamento antigo, mas o lançamento
+    // NOVO nunca pode nascer na linha pintada de outro: a cor dele é sempre limpa.
+    try {
+      const meta = await sheets.spreadsheets.get({ spreadsheetId, fields: "sheets(properties(sheetId,title))" });
+      fallbackSheetId = meta.data.sheets?.find((x) => x.properties?.title === monthName)?.properties?.sheetId ?? null;
+    } catch {
+      fallbackSheetId = null;
+    }
   }
   const fillEndCol = Math.max(20, (excluirIndex ?? 0) + 1, (conciliadoIndex ?? 0) + 1);
   const formatRequests: sheets_v4.Schema$Request[] = [];
@@ -370,6 +379,7 @@ export async function rebuildDayBlock(
     const excluirRows: boolean[][] = [];
     const conciliadoRows: boolean[][] = [];
     const carriedFills: (sheets_v4.Schema$Color | null)[] = [];
+    const isNewRow: boolean[] = [];
     for (const t of blockTransactions) {
       const amount = Number(t.amount);
       const matchIndex = oldRows.findIndex(
@@ -380,8 +390,10 @@ export async function rebuildDayBlock(
         excluirRows.push([false]);
         conciliadoRows.push([false]);
         carriedFills.push(null);
+        isNewRow.push(true);
         continue;
       }
+      isNewRow.push(false);
       consumed.add(matchIndex);
       carriedFills.push(fillInfo?.fills.get(oldRowNumbers[matchIndex]) ?? null);
       const row = oldRows[matchIndex];
@@ -426,6 +438,19 @@ export async function rebuildDayBlock(
     // Cor de cada linha do bloco: a do lançamento que ocupa a linha (se tinha),
     // sem cor pro que é novo e pras linhas em branco. Linhas seguidas com a
     // mesma cor viram um pedido só.
+    if (!fillInfo && fallbackSheetId != null) {
+      // não deu pra ler as cores: só tira a cor dos lançamentos novos e das linhas em branco do bloco
+      for (let i = 0; i < capacity; i++) {
+        if (i < blockTransactions.length && !isNewRow[i]) continue;
+        formatRequests.push({
+          repeatCell: {
+            range: { sheetId: fallbackSheetId, startRowIndex: block.start1 - 1 + i, endRowIndex: block.start1 + i, startColumnIndex: 0, endColumnIndex: fillEndCol },
+            cell: { userEnteredFormat: {} },
+            fields: "userEnteredFormat.backgroundColor",
+          },
+        });
+      }
+    }
     if (fillInfo) {
       const colorAt = (i: number) => (i < blockTransactions.length ? carriedFills[i] : null);
       let runStart = 0;
