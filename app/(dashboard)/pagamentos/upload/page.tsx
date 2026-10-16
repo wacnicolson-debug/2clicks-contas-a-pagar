@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { filesFromClipboard } from "@/lib/utils/clipboardFiles";
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
 
@@ -34,21 +35,10 @@ export default function PaymentListUploadPage() {
   // página, não só com foco num campo.
   useEffect(() => {
     function onPaste(e: ClipboardEvent) {
-      if (submitting || !e.clipboardData) return;
-      const imageItems = Array.from(e.clipboardData.items).filter((item) => item.type.startsWith("image/"));
-      if (imageItems.length === 0) return;
-      e.preventDefault();
-
-      const pastedFiles = imageItems
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => file !== null)
-        .map((file, i) => {
-          // Print colado vem com nome genérico ("image.png") — dá um nome
-          // com timestamp pra distinguir vários prints na lista.
-          const ext = file.type.split("/")[1] ?? "png";
-          return new File([file], `print-${Date.now()}-${i}.${ext}`, { type: file.type });
-        });
+      if (submitting) return;
+      const pastedFiles = filesFromClipboard(e);
       if (pastedFiles.length === 0) return;
+      e.preventDefault();
 
       setEntries((prev) => [...prev, ...pastedFiles.map((file) => ({ file, status: "pending" as const }))]);
     }

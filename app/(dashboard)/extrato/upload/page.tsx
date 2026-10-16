@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { filesFromClipboard } from "@/lib/utils/clipboardFiles";
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
 
@@ -28,6 +29,19 @@ export default function StatementUploadPage() {
     const files = Array.from(fileList ?? []);
     setEntries((prev) => [...prev, ...files.map((file) => ({ file, status: "pending" as const }))]);
   }
+
+  // Ctrl+V com arquivos copiados (PDF/imagem) ou um print — em qualquer lugar da página.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      if (submitting) return;
+      const pastedFiles = filesFromClipboard(e);
+      if (pastedFiles.length === 0) return;
+      e.preventDefault();
+      setEntries((prev) => [...prev, ...pastedFiles.map((file) => ({ file, status: "pending" as const }))]);
+    }
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [submitting]);
 
   function updateEntry(index: number, patch: Partial<FileEntry>) {
     setEntries((prev) => prev.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)));
