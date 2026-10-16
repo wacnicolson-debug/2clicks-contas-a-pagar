@@ -20,7 +20,6 @@ import {
   rowHasData,
   rowMatchesTransaction,
   validDay,
-  type DayBlock,
 } from "./dayBlockLayout";
 
 const HEADER_ROWS = 2; // título + cabeçalho, 0-based -> primeira linha de dado = índice 2
@@ -287,28 +286,10 @@ export async function rebuildDayBlock(
     byDay.set(d, [...(byDay.get(d) ?? []), t]);
   }
 
-  // Dia com mais lançamentos que linhas no bloco: abre linhas novas DENTRO do
-  // bloco (o que o usuário faz na mão) em vez de recusar gravar. Recusar
-  // também travava as exclusões desse dia — pra apagar, o app regrava o bloco
-  // inteiro. Depois da inserção as posições mudam, então relê e regrava.
-  if (!options?.retried) {
-    const needMore = plan.days
-      .map((d) => {
-        const block = plan.blocks.get(d)!;
-        return { block, extra: (byDay.get(d)?.length ?? 0) - (block.end1 - block.start1 + 1) };
-      })
-      .filter((x) => x.extra > 0)
-      .sort((a, b) => b.block.start1 - a.block.start1); // de baixo pra cima: não desloca os de cima
-    if (needMore.length > 0) {
-      await insertRowsInBlocks(
-        sheets,
-        spreadsheetId,
-        monthName,
-        needMore.map((x) => ({ block: x.block, count: x.extra + 3 }))
-      );
-      return rebuildDayBlock(companyId, year, monthName, day, { ...options, retried: true });
-    }
-  }
+  // O app NUNCA muda a estrutura da planilha (não abre nem apaga linhas, não mexe em grupos
+  // nem em formatação): excluir um lançamento só limpa os dados da linha, que fica livre pra
+  // o próximo. Se um dia tiver mais lançamentos que linhas, o erro abaixo avisa — as linhas
+  // novas são abertas por você, na planilha.
 
   // Coluna EXCLUIR (marcação pra apagar o lançamento): também presa à linha,
   // então precisa acompanhar o lançamento no reordenamento — senão a marcação
@@ -547,42 +528,6 @@ async function readRowFills(
     }
   });
   return { sheetId, fills };
-}
-
-/**
- * Insere linhas dentro de cada bloco (antes da última linha dele, pra o
- * agrupamento e a soma do "Total do dia" crescerem junto). `items` deve vir de
- * baixo pra cima, pra uma inserção não deslocar as posições das de cima.
- */
-async function insertRowsInBlocks(
-  sheets: sheets_v4.Sheets,
-  spreadsheetId: string,
-  tabName: string,
-  items: { block: DayBlock; count: number }[]
-): Promise<void> {
-  const meta = await sheets.spreadsheets.get({
-    spreadsheetId,
-    fields: "sheets.properties(sheetId,title)",
-  });
-  const sheetId = meta.data.sheets?.find((s) => s.properties?.title === tabName)?.properties?.sheetId;
-  if (sheetId == null) throw new Error(`Aba ${tabName} não encontrada pra abrir linhas no bloco do dia.`);
-
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      requests: items.map(({ block, count }) => ({
-        insertDimension: {
-          range: {
-            sheetId,
-            dimension: "ROWS",
-            startIndex: block.end1 - 1,
-            endIndex: block.end1 - 1 + count,
-          },
-          inheritFromBefore: true,
-        },
-      })),
-    },
-  });
 }
 
 /**
