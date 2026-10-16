@@ -42,7 +42,7 @@ export async function PATCH(
 
   const transaction = await prisma.transaction.findFirst({
     where: { id, companyId: session.companyId },
-    include: { supplier: { select: { name: true } } },
+    include: { supplier: { select: { name: true, taxId: true } } },
   });
   if (!transaction) {
     return NextResponse.json({ error: "Lançamento não encontrado." }, { status: 404 });
@@ -77,6 +77,7 @@ export async function PATCH(
     amount,
     supplierId: transaction.supplierId,
     supplierName: transaction.supplier.name,
+    supplierTaxId: transaction.supplier.taxId,
     excludeId: transaction.id,
   });
   if (identical) {

@@ -89,6 +89,7 @@ async function syncTransactionCore(
       amount: transaction.amount,
       supplierId: transaction.supplierId,
       supplierName: transaction.supplier.name,
+      supplierTaxId: transaction.supplier.taxId,
       excludeId: transaction.id,
       onlyInSheet: true,
     });

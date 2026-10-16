@@ -25,6 +25,7 @@ export async function findIdenticalTransaction(params: {
   amount: number | Prisma.Decimal;
   supplierId: string;
   supplierName: string;
+  supplierTaxId?: string | null; // CNPJ/CPF: mesmo documento = mesmo fornecedor, seja qual for o nome
   excludeId: string;
   // true = só conta quem já foi gravado na planilha (usado na entrada de
   // lançamento novo, pra dois lançamentos novos não descartarem um ao outro).
@@ -39,12 +40,24 @@ export async function findIdenticalTransaction(params: {
       id: { not: params.excludeId },
       ...(params.onlyInSheet ? { sheetCellRef: { not: null } } : {}),
     },
-    include: { supplier: { select: { name: true } } },
+    include: { supplier: { select: { name: true, taxId: true } } },
     orderBy: { createdAt: "asc" },
   });
   return (
-    candidates.find((c) => c.supplierId === params.supplierId || sameSupplierName(c.supplier.name, params.supplierName)) ?? null
+    candidates.find(
+      (c) =>
+        c.supplierId === params.supplierId ||
+        sameTaxId(c.supplier.taxId, params.supplierTaxId) ||
+        sameSupplierName(c.supplier.name, params.supplierName)
+    ) ?? null
   );
+}
+
+/** Mesmo CNPJ/CPF (só dígitos, 11 ou 14). Relação de pagamentos e extrato trazem o nome truncado, mas o documento é o mesmo. */
+export function sameTaxId(a: string | null | undefined, b: string | null | undefined): boolean {
+  const da = (a ?? "").replace(/\D/g, "");
+  const db = (b ?? "").replace(/\D/g, "");
+  return (da.length === 11 || da.length === 14) && da === db;
 }
 
 // Mesmo fornecedor mesmo com o nome abreviado: "SENSORMATIC" e "SENSORMATIC DO
@@ -55,5 +68,8 @@ export function sameSupplierName(a: string, b: string): boolean {
   if (!ka || !kb) return false;
   if (ka === kb) return true;
   const [short, long] = ka.length <= kb.length ? [ka, kb] : [kb, ka];
-  return short.length >= 5 && long.startsWith(short + " ");
+  if (short.length >= 5 && long.startsWith(short + " ")) return true;
+  // Nome cortado pelo banco ("...SEGURANCA DO TRABA" x "...SEGURANCA DO TRABALHO"):
+  // um é o começo do outro, com nome comprido o bastante pra não ser coincidência.
+  return short.length >= 20 && long.startsWith(short);
 }
