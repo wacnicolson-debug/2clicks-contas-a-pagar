@@ -77,16 +77,20 @@ export function locateDayBlocks(
     }
   });
 
+  // O ÚLTIMO dia da aba (30 em mês de 30 dias, 28/29 em fevereiro) também não tem "dia
+  // seguinte": se ele ficasse de fora, o app caía na conta de 30 linhas por dia — que erra
+  // assim que linhas são abertas nos dias de cima — e gravava o dia na linha errada.
+  const lastDay = starts.size > 0 ? Math.max(...starts.keys()) : 0;
   for (let day = 1; day <= 31; day++) {
     const start1 = starts.get(day);
     if (start1 === undefined) continue;
     let end1: number;
-    if (day < 31) {
+    if (day < 31 && day !== lastDay) {
       const next = starts.get(day + 1);
       if (next === undefined) continue;
       end1 = next - 1;
     } else {
-      // Dia 31 não tem "dia seguinte": vai até a linha antes do "TOTAL DO MÊS"
+      // O último dia não tem "dia seguinte": vai até a linha antes do "TOTAL DO MÊS"
       // (texto na coluna Dia), pra o bloco crescer junto quando linhas são
       // abertas nele; sem isso, assume 30 linhas.
       end1 = start1 + ROWS_PER_DAY - 1;
