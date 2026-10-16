@@ -201,7 +201,10 @@ export async function POST(
           amount: installment.amount,
           dueDate: new Date(dueDateStr),
           noteDate,
-          description: withAdjustNote(body.description, adjusted.note),
+          description: withAdjustNote(
+            body.description,
+            adjusted.note ?? ((docPage.rawExtraction as { dateAdjustNote?: string | null }).dateAdjustNote ?? null)
+          ),
           paymentStatus: effectiveKind === "FORNECEDOR" ? (effectivePaymentStatus ?? undefined) : undefined,
           paymentMethod: effectiveKind === "FORNECEDOR" ? (effectivePaymentMethod ?? undefined) : undefined,
           pixKey: effectiveKind === "FORNECEDOR" && effectivePaymentMethod === "PIX" ? effectivePixKey : undefined,

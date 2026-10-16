@@ -6,6 +6,7 @@ import { extractPaymentListLines, ExtractedPaymentLine } from "@/lib/ai/extractP
 import { resolveSupplier, needsOnboardingQuestions } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
+import { adjustPaymentDate } from "@/lib/utils/businessDays";
 
 // Chave de "impressão digital" de um pagamento: data+valor+favorecido
 // normalizado. Dois pagamentos iguais pro mesmo favorecido no mesmo dia (ex:
@@ -81,11 +82,15 @@ export const processPaymentList = inngest.createFunction(
       );
     }
 
+    // Cada pagamento cai no próximo dia útil (sábado, domingo e feriado pulam pra
+    // frente). Tudo abaixo — duplicata, lançamento e planilha — usa a data já ajustada.
+    const dateInfo = lines.map((l) => adjustPaymentDate(l.date));
+
     // Impressões digitais (data+valor+favorecido) já lançadas antes desta
     // execução — carregado 1x, só pras datas que aparecem nesta lista, pra
     // não varrer todo o histórico da empresa à toa.
     const existingCounts = await step.run("load-existing-payment-fingerprints", async () => {
-      const dates = [...new Set(lines.map((l) => l.date))].map((d) => new Date(d));
+      const dates = [...new Set(dateInfo.map((d) => d.date))].map((d) => new Date(d));
       const rows = await prisma.transaction.findMany({
         where: { companyId: document.companyId, dueDate: { in: dates } },
         select: { dueDate: true, amount: true, supplier: { select: { name: true } } },
@@ -101,7 +106,10 @@ export const processPaymentList = inngest.createFunction(
       }
       return [...counts.entries()];
     });
-    const alreadyLaunchedFlags = buildAlreadyLaunchedFlags(lines, new Map(existingCounts));
+    const alreadyLaunchedFlags = buildAlreadyLaunchedFlags(
+      lines.map((l, i) => ({ ...l, date: dateInfo[i].date })),
+      new Map(existingCounts)
+    );
 
     let anyAwaitingInput = false;
 
@@ -115,7 +123,7 @@ export const processPaymentList = inngest.createFunction(
           // essa combinação (favorecido+data+valor) já foi lançada antes
         }
 
-        const lineDate = new Date(line.date);
+        const lineDate = new Date(dateInfo[index].date);
 
         const supplier = await resolveSupplier({
           companyId: document.companyId,
@@ -134,7 +142,8 @@ export const processPaymentList = inngest.createFunction(
               supplierNameRaw: line.payeeNameRaw,
               taxId: line.taxId,
               noteNumber: line.noteNumber,
-              installments: [{ amount: line.amount, dueDate: line.date }],
+              installments: [{ amount: line.amount, dueDate: dateInfo[index].date }],
+              dateAdjustNote: dateInfo[index].note,
               confidence: 1,
               notes: `Pagamento (${line.paymentMethod}) lido de relação de pagamentos.`,
               duplicateOfPageNumber: null,
@@ -170,6 +179,7 @@ export const processPaymentList = inngest.createFunction(
             pixKey: line.pixKey ?? supplier.pixKey,
             categoryId: supplier.defaultCategoryId,
             noteNumber: line.noteNumber,
+            description: dateInfo[index].note,
             paid: true,
             createdByUserId: document.uploadedById,
           },

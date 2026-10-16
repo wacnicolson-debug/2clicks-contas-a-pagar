@@ -64,7 +64,7 @@ export function brazilianHolidays(year: number): Map<string, string> {
   return holidays;
 }
 
-function reasonIfNonBusiness(iso: string): string | null {
+function reasonIfNonBusiness(iso: string, skipSaturday = false): string | null {
   const match = ISO.exec(iso);
   if (!match) return null;
   const date = new Date(`${iso}T00:00:00Z`);
@@ -72,6 +72,7 @@ function reasonIfNonBusiness(iso: string): string | null {
   const holiday = brazilianHolidays(Number(match[1])).get(iso);
   if (holiday) return holiday === "sem expediente bancário" ? holiday : `feriado: ${holiday}`;
   if (date.getUTCDay() === 0) return "domingo";
+  if (skipSaturday && date.getUTCDay() === 6) return "sábado";
   return null;
 }
 
@@ -88,6 +89,24 @@ export function adjustDueDate(iso: string): { date: string; note: string | null 
   for (let i = 0; i < 10; i++) {
     current = addDays(current, 1);
     if (!reasonIfNonBusiness(toIso(current))) break;
+  }
+  const [y, m, d] = iso.split("-");
+  return { date: toIso(current), note: `Venc. original ${d}/${m}/${y} (${reason})` };
+}
+
+/**
+ * Data de um pagamento da "Relação de Pagamentos": sábado, domingo e feriado
+ * passam pro próximo dia útil (um pix pago no sábado vai pra segunda). Diferente
+ * do vencimento de nota (adjustDueDate), aqui o sábado TAMBÉM é pulado.
+ */
+export function adjustPaymentDate(iso: string): { date: string; note: string | null } {
+  const reason = reasonIfNonBusiness(iso, true);
+  if (!reason) return { date: iso, note: null };
+
+  let current = new Date(`${iso}T00:00:00Z`);
+  for (let i = 0; i < 10; i++) {
+    current = addDays(current, 1);
+    if (!reasonIfNonBusiness(toIso(current), true)) break;
   }
   const [y, m, d] = iso.split("-");
   return { date: toIso(current), note: `Venc. original ${d}/${m}/${y} (${reason})` };
