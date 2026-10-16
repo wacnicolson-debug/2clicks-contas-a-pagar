@@ -46,6 +46,7 @@ export default function CapturarPage() {
   const [fillLight, setFillLight] = useState<string[]>([]); // modos de flash que a câmera declara (fillLightMode)
   const [hasTorch, setHasTorch] = useState<boolean | null>(null); // lanterna controlável pelo navegador
   const [ready, setReady] = useState(false);
+  const [cameraProblem, setCameraProblem] = useState<string | null>(null); // por que a câmera do app não abriu (a câmera do celular fica como opção)
   const [shooting, setShooting] = useState(false); // tirando a foto agora (lanterna + captura), antes de liberar o botão de novo
   const [shots, setShots] = useState<Shot[]>([]);
   const shotId = useRef(0);
@@ -119,12 +120,37 @@ export default function CapturarPage() {
   async function openCamera() {
     setError(null);
     setReady(false);
+    setCameraProblem(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraProblem("Este navegador não permite abrir a câmera dentro do app.");
+      return;
+    }
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 4096 }, height: { ideal: 3072 } },
-        audio: false,
-      });
-      streamRef.current = stream;
+      // tenta a melhor qualidade; se o celular recusar as medidas, tenta só a câmera traseira
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" }, width: { ideal: 4096 }, height: { ideal: 3072 } },
+          audio: false,
+        });
+      } catch (first) {
+        if ((first as DOMException)?.name === "NotAllowedError" || (first as DOMException)?.name === "SecurityError") throw first;
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+      }
+    } catch (err) {
+      stopCamera();
+      const name = (err as DOMException)?.name ?? "erro";
+      setCameraProblem(
+        name === "NotAllowedError"
+          ? "O celular negou o acesso à câmera para este app. Libere a câmera nas permissões do site (cadeado ao lado do endereço) e tente de novo."
+          : `Não consegui abrir a câmera do app (${name}).`
+      );
+      return;
+    }
+    streamRef.current = stream;
+
+    // O que for detectar sobre flash nunca pode derrubar a câmera: se algo falhar, segue sem controle de flash.
+    try {
       const track = stream.getVideoTracks()[0];
       const caps = (track?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { torch?: boolean };
       setHasTorch(caps.torch === true);
@@ -138,12 +164,11 @@ export default function CapturarPage() {
       } else {
         setFillLight([]);
       }
-      setStatus("camera");
     } catch {
-      // sem permissão ou sem câmera no navegador: cai na câmera do sistema
-      stopCamera();
-      inputRef.current?.click();
+      setHasTorch(false);
+      setFillLight([]);
     }
+    setStatus("camera");
   }
 
   useEffect(() => {
@@ -367,6 +392,7 @@ export default function CapturarPage() {
           </>
         ) : (
           <>
+            {cameraProblem && <p className="text-sm text-amber-700 mb-4">{cameraProblem}</p>}
             <button
               type="button"
               disabled={status === "uploading"}
