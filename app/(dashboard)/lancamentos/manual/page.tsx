@@ -16,7 +16,8 @@ export default function ManualTransactionPage() {
   const [kind, setKind] = useState<Kind>("FORNECEDOR");
   const [amount, setAmount] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [status, setStatus] = useState<Status>("A_PAGAR");
+  // "Pago ou a pagar?" saiu da tela: quem marca o que já foi conciliado é a caixinha CONCILIADO da planilha.
+  const [status] = useState<Status>("A_PAGAR");
   const [method, setMethod] = useState<Method>("BOLETO");
   const [pixKey, setPixKey] = useState("");
   const [categoryName, setCategoryName] = useState("");
@@ -153,28 +154,6 @@ export default function ManualTransactionPage() {
 
           {kind === "FORNECEDOR" && (
             <>
-              <fieldset>
-                <legend className="text-sm font-medium mb-2">Pago ou a pagar?</legend>
-                <div className="flex gap-4 text-sm">
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={status === "PAGO"}
-                      onChange={() => setStatus("PAGO")}
-                    />
-                    Pago
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
-                      checked={status === "A_PAGAR"}
-                      onChange={() => setStatus("A_PAGAR")}
-                    />
-                    A pagar
-                  </label>
-                </div>
-              </fieldset>
-
               <fieldset>
                 <legend className="text-sm font-medium mb-2">Forma de pagamento</legend>
                 <div className="flex gap-4 text-sm mb-2">

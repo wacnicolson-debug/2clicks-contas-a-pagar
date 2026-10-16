@@ -53,10 +53,9 @@ export function EditTransactionForm({
       noteNumber,
       description: observacao,
     };
+    // Fornecedor: o "pago/a pagar" não é mais editado aqui (a caixinha CONCILIADO da planilha substituiu).
     if (isCliente) {
       body.paid = status === "PAGO";
-    } else {
-      body.paymentStatus = status;
     }
 
     const res = await fetch(`/api/transactions/${transaction.id}`, {
@@ -270,21 +269,21 @@ export function EditTransactionForm({
           />
         </div>
 
-        <fieldset>
-          <legend className="text-sm font-medium mb-2">
-            {isCliente ? "Recebido ou a receber?" : "Pago ou a pagar?"}
-          </legend>
-          <div className="flex gap-4 text-sm">
-            <label className="flex items-center gap-2">
-              <input type="radio" checked={status === "PAGO"} onChange={() => setStatus("PAGO")} />
-              {isCliente ? "Recebido" : "Pago"}
-            </label>
-            <label className="flex items-center gap-2">
-              <input type="radio" checked={status === "A_PAGAR"} onChange={() => setStatus("A_PAGAR")} />
-              {isCliente ? "A receber" : "A pagar"}
-            </label>
-          </div>
-        </fieldset>
+        {isCliente && (
+          <fieldset>
+            <legend className="text-sm font-medium mb-2">Recebido ou a receber?</legend>
+            <div className="flex gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input type="radio" checked={status === "PAGO"} onChange={() => setStatus("PAGO")} />
+                Recebido
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="radio" checked={status === "A_PAGAR"} onChange={() => setStatus("A_PAGAR")} />
+                A receber
+              </label>
+            </div>
+          </fieldset>
+        )}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
 
