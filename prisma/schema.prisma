@@ -28,6 +28,7 @@ model Company {
   rowIndexes    SheetRowIndex[]
   sheets        CompanySheet[]
   stockSheets   StockSheet[]
+  stockOpenings StockOpening[]
   purchaseNotes PurchaseNote[]
 }
 
@@ -330,4 +331,23 @@ model PurchaseNote {
 
   @@index([companyId, year, monthDate])
   @@index([companyId, supplierId, noteNumber])
+}
+
+// Saldo inicial do estoque (contagem em uma data, sem preço): entra na aba
+// Estoque como linhas "saldo inicial" e some quando o estoque for refeito.
+model StockOpening {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+  year        Int
+  openingDate DateTime
+  itemName    String
+  description String
+  qty         Decimal? @db.Decimal(14, 3)
+  unit        String?
+  kind        String   @default("AVIAMENTO")
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([companyId, year])
 }

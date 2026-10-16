@@ -26,7 +26,9 @@ export async function knownItemNamesFor(companyId: string, kind: StockKind): Pro
       if (name && !names.has(normalizeText(name))) names.set(normalizeText(name), name);
     }
   }
-  return [...names.values()].sort((a, b) => a.localeCompare(b, "pt-BR")).slice(0, 400);
+  const openings = await prisma.stockOpening.findMany({ where: { companyId, kind }, select: { itemName: true } });
+  for (const op of openings) if (!names.has(normalizeText(op.itemName))) names.set(normalizeText(op.itemName), op.itemName);
+  return [...names.values()].sort((a, b) => a.localeCompare(b, "pt-BR")).slice(0, 600);
 }
 
 type Line = {
@@ -97,6 +99,25 @@ export async function buildEstoqueRows(
         total,
         first: i === 0,
       });
+    });
+  }
+
+  const openings = await prisma.stockOpening.findMany({ where: { companyId, year }, orderBy: { createdAt: "asc" } });
+  for (const op of openings) {
+    lines.push({
+      key: `${op.kind}|${normalizeText(op.itemName)}|${normalizeText(op.unit ?? "")}`,
+      date: op.openingDate,
+      order: -1_000_000 + order++, // o saldo inicial vem antes das compras do mesmo dia
+      monthLabel: MONTHS[op.openingDate.getUTCMonth()],
+      supplier: "SALDO INICIAL",
+      noteNumber: "",
+      kind: op.kind as StockKind,
+      item: { description: op.description, itemName: op.itemName, generic: false, code: null, quantity: op.qty !== null ? Number(op.qty) : null, unit: op.unit, unitPrice: null, totalPrice: null },
+      qty: op.qty !== null ? Number(op.qty) : null,
+      unitPrice: null,
+      total: null,
+      remark: op.note ?? "",
+      first: true,
     });
   }
 
