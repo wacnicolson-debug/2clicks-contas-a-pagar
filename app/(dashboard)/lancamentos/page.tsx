@@ -5,11 +5,6 @@ import { DeleteButton } from "./delete-button";
 import { AutoRefresh } from "@/app/_components/AutoRefresh";
 import type { Prisma } from "@prisma/client";
 
-const STATUS_LABEL: Record<string, string> = {
-  PAGO: "Pago",
-  A_PAGAR: "A pagar",
-};
-
 const PAGE_SIZE = 500;
 
 const SORT_OPTIONS = {
@@ -183,7 +178,7 @@ export default async function LancamentosPage({
                   <th className="px-4 py-2 font-medium">Vencimento</th>
                   <th className="px-4 py-2 font-medium">Valor</th>
                   <th className="px-4 py-2 font-medium">Categoria</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
+                  <th className="px-4 py-2 font-medium">Planilha</th>
                   <th className="px-4 py-2 font-medium"></th>
                 </tr>
               </thead>
@@ -214,14 +209,15 @@ export default async function LancamentosPage({
                     </td>
                     <td className="px-4 py-2 text-neutral-500">{t.category?.name ?? "—"}</td>
                     <td className="px-4 py-2 text-neutral-500 whitespace-nowrap">
-                      {t.paymentStatus ? STATUS_LABEL[t.paymentStatus] : "—"}
-                      {t.sheetCellRef === null && (
+                      {t.sheetCellRef === null ? (
                         <span
-                          className="ml-2 text-xs font-medium text-red-600"
-                          title="Este lançamento está no app mas não foi gravado na planilha. Abra em Editar e use Reenviar pra planilha — a mensagem diz o motivo."
+                          className="text-xs font-medium text-red-600"
+                          title="Este lançamento está no app mas não foi gravado na planilha — geralmente porque o dia está cheio. Abra linhas no dia da planilha e use Editar > Reenviar pra planilha."
                         >
                           fora da planilha
                         </span>
+                      ) : (
+                        "—"
                       )}
                     </td>
                     <td className="px-4 py-2 text-right whitespace-nowrap">
