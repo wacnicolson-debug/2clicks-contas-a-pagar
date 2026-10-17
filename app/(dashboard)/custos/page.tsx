@@ -44,7 +44,10 @@ export default async function CustosPage({
   // igual pra mês, trimestre ou ano, sem precisar de lógica por período.
   const prevRef = new Date(start.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const nextRef = end.toISOString().slice(0, 10);
-  const isCurrentPeriod = now >= start && now < end;
+  // O período "atual" é o que contém HOJE — não a data de referência da URL (essa é só pra navegar):
+  // comparar com ela deixava a seta → desligada em qualquer período aberto pela seta ←.
+  const today = new Date();
+  const isCurrentPeriod = today >= start && today < end;
 
   const total = rows.reduce((sum, r) => sum + r.amount, 0);
   const maxAmount = Math.max(...rows.map((r) => r.amount), 1);

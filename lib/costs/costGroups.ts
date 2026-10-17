@@ -6,6 +6,9 @@ import { normalizeText } from "@/lib/utils/normalizeText";
 // "lenha":   Produtos químicos separa Lenha do restante (só a GLM compra produto químico).
 export type GroupMode = "empresa" | "lenha";
 
+// Desligado até o usuário terminar de marcar "lenha" nas observações (pediu pra esperar).
+const LENHA_ENABLED = false;
+
 type GroupDef = { key: string; label: string; hint: string; match: RegExp | null };
 
 const EMPRESA_GROUPS: GroupDef[] = [
@@ -42,7 +45,7 @@ export function costGroupLabel(mode: GroupMode, key: string): string {
 /** Que tipo de separação a categoria tem (null = abre direto na lista item a item). */
 export function groupModeFor(categoryName: string): GroupMode | null {
   const n = normalizeText(categoryName);
-  if (n.includes("quimic")) return "lenha";
+  if (LENHA_ENABLED && n.includes("quimic")) return "lenha";
   if (n.includes("mao de obra") || n.includes("imposto") || n.includes("energia") || n === "agua" || n.startsWith("agua ")) {
     return "empresa";
   }
