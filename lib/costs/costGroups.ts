@@ -27,5 +27,5 @@ export function costGroupLabel(key: string): string {
 /** Categorias que abrem primeiro numa tela de somas por empresa (GLM / MRC / Santa Luzia...). */
 export function categoryOpensByCompany(categoryName: string): boolean {
   const n = normalizeText(categoryName);
-  return n.includes("mao de obra") || n.includes("imposto");
+  return n.includes("mao de obra") || n.includes("imposto") || n.includes("energia") || n === "agua" || n.startsWith("agua ");
 }
