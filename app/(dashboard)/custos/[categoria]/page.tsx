@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { costWhere, getRange, parseBase, parsePeriod, referenceDate } from "@/lib/costs/costRange";
-import { COST_GROUPS, categoryOpensByCompany, costGroupLabel, costGroupOf } from "@/lib/costs/costGroups";
+import { costGroupLabel, costGroupOf, groupModeFor, groupsFor } from "@/lib/costs/costGroups";
 
 const BRL = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const BR_DATE = (d: Date) => d.toISOString().slice(0, 10).split("-").reverse().join("/");
@@ -47,13 +47,13 @@ export default async function CustoDetalhePage({
 
   const baseQuery = `periodo=${period}&base=${base}${refDateParam ? `&data=${refDateParam}` : ""}`;
   const backToTotals = `/custos?${baseQuery}`;
-  const opensByCompany = categoryOpensByCompany(categoryName);
+  const mode = groupModeFor(categoryName);
   const baseLabel = base === "entrada" ? "data de entrada" : "data de pagamento";
 
-  // ---- Tela 2 (só Mão de obra e Impostos): somas por empresa, pela observação do lançamento ----
-  if (opensByCompany && !grupo) {
-    const sums = COST_GROUPS.map((g) => {
-      const list = all.filter((t) => costGroupOf(t.description) === g.key);
+  // ---- Tela 2 (Mão de obra, Impostos, Energia, Água, Produtos químicos): somas pela observação do lançamento ----
+  if (mode && !grupo) {
+    const sums = groupsFor(mode).map((g) => {
+      const list = all.filter((t) => costGroupOf(mode, t.description) === g.key);
       return { ...g, amount: list.reduce((s, t) => s + Number(t.amount), 0), count: list.length };
     }).filter((g) => g.count > 0);
     const total = sums.reduce((s, g) => s + g.amount, 0);
@@ -108,7 +108,7 @@ export default async function CustoDetalhePage({
   }
 
   // ---- Lista item a item (categoria inteira, ou uma empresa dentro de Mão de obra/Impostos) ----
-  const transactions = grupo ? all.filter((t) => costGroupOf(t.description) === grupo) : all;
+  const transactions = grupo && mode ? all.filter((t) => costGroupOf(mode, t.description) === grupo) : all;
   const total = transactions.reduce((sum, t) => sum + Number(t.amount), 0);
 
   // Subtotal por fornecedor: responde "de quem foi esse gasto" sem precisar somar a lista.
@@ -121,7 +121,7 @@ export default async function CustoDetalhePage({
 
   const backHref = grupo ? `/custos/${categoria}?${baseQuery}` : backToTotals;
   const backLabel = grupo ? `← Voltar a ${categoryName}` : "← Voltar à distribuição de custos";
-  const title = grupo ? `${categoryName} — ${costGroupLabel(grupo)}` : categoryName;
+  const title = grupo && mode ? `${categoryName} — ${costGroupLabel(mode, grupo)}` : categoryName;
   const dateHeader = base === "entrada" ? "Data da nota" : "Vencimento";
 
   return (
