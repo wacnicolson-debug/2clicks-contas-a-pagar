@@ -1,44 +1,7 @@
 import Link from "next/link";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
-
-const MONTH_NAMES = [
-  "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-  "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-];
-
-const QUARTER_LABELS = ["1º trimestre", "2º trimestre", "3º trimestre", "4º trimestre"];
-
-type Period = "mes" | "trimestre" | "ano";
-type DateBase = "pagamento" | "entrada";
-
-function getRange(period: Period, now: Date): { start: Date; end: Date; label: string } {
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-
-  if (period === "ano") {
-    return {
-      start: new Date(Date.UTC(year, 0, 1)),
-      end: new Date(Date.UTC(year + 1, 0, 1)),
-      label: `Ano de ${year}`,
-    };
-  }
-
-  if (period === "trimestre") {
-    const quarterIndex = Math.floor(month / 3);
-    return {
-      start: new Date(Date.UTC(year, quarterIndex * 3, 1)),
-      end: new Date(Date.UTC(year, quarterIndex * 3 + 3, 1)),
-      label: `${QUARTER_LABELS[quarterIndex]} de ${year}`,
-    };
-  }
-
-  return {
-    start: new Date(Date.UTC(year, month, 1)),
-    end: new Date(Date.UTC(year, month + 1, 1)),
-    label: `${MONTH_NAMES[month]} de ${year}`,
-  };
-}
+import { costWhere, getRange, parseBase, parsePeriod, referenceDate, type DateBase, type Period } from "@/lib/costs/costRange";
 
 export default async function CustosPage({
   searchParams,
@@ -49,38 +12,17 @@ export default async function CustosPage({
   if (!session) return null;
 
   const params = await searchParams;
-  const period: Period =
-    params.periodo === "trimestre" || params.periodo === "ano" ? params.periodo : "mes";
-  const base: DateBase = params.base === "entrada" ? "entrada" : "pagamento";
+  const period: Period = parsePeriod(params.periodo);
+  const base: DateBase = parseBase(params.base);
 
   // "data" é só uma data de referência dentro do período que se quer ver —
   // deixa navegar pra mês/trimestre/ano passado (ou futuro), não só o atual.
-  const refDateParam = typeof params.data === "string" ? params.data : null;
-  const now = refDateParam ? new Date(refDateParam + "T00:00:00Z") : new Date();
+  const { now, refDateParam } = referenceDate(params.data);
   const { start, end, label } = getRange(period, now);
 
   const grouped = await prisma.transaction.groupBy({
     by: ["categoryId"],
-    where: {
-      companyId: session.companyId,
-      kind: "PAYABLE",
-      ...(base === "entrada"
-        ? // Data de entrada = quando o custo realmente aconteceu: a "Data da
-          // nota" (noteDate), quando preenchida (nota antiga lançada com
-          // atraso — ver Transaction.noteDate), senão o vencimento — MESMA
-          // regra de "costDate" usada em syncTransaction.ts e na Classificação
-          // de Custos. NUNCA "createdAt" (quando foi digitado no sistema): um
-          // lote de Relação de Pagamentos ou de Extrato processado num dia só,
-          // com contas de meses passados, jogava tudo pro mês em que foi
-          // digitado em vez do mês em que o custo aconteceu de verdade.
-          {
-            OR: [
-              { noteDate: { gte: start, lt: end } },
-              { noteDate: null, dueDate: { gte: start, lt: end } },
-            ],
-          }
-        : { dueDate: { gte: start, lt: end } }),
-    },
+    where: costWhere(session.companyId, base, start, end),
     _sum: { amount: true },
   });
 
@@ -90,6 +32,7 @@ export default async function CustosPage({
 
   const rows = grouped
     .map((g) => ({
+      id: g.categoryId ?? "sem-categoria",
       name: g.categoryId ? (categoryNameById.get(g.categoryId) ?? "Categoria removida") : "Sem categoria",
       amount: Number(g._sum.amount ?? 0),
     }))
@@ -201,8 +144,14 @@ export default async function CustosPage({
             {rows.map((row) => {
               const pct = total > 0 ? (row.amount / total) * 100 : 0;
               const barWidth = (row.amount / maxAmount) * 100;
+              const detailHref = `/custos/${row.id}?periodo=${period}&base=${base}${refDateParam ? `&data=${refDateParam}` : ""}`;
               return (
-                <div key={row.name}>
+                <Link
+                  key={row.id}
+                  href={detailHref}
+                  className="block rounded-md -mx-2 px-2 py-1 hover:bg-neutral-50"
+                  title="Ver tudo que compõe esse gasto"
+                >
                   <div className="flex justify-between text-sm mb-1">
                     <span className="font-medium">{row.name}</span>
                     <span className="text-neutral-500 tabular-nums">
@@ -217,7 +166,7 @@ export default async function CustosPage({
                       style={{ width: `${barWidth}%` }}
                     />
                   </div>
-                </div>
+                </Link>
               );
             })}
           </div>
