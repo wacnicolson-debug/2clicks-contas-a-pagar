@@ -6,8 +6,8 @@ import { normalizeText } from "@/lib/utils/normalizeText";
 // "lenha":   Produtos químicos separa Lenha do restante (só a GLM compra produto químico).
 export type GroupMode = "empresa" | "lenha";
 
-// Desligado até o usuário terminar de marcar "lenha" nas observações (pediu pra esperar).
-const LENHA_ENABLED = false;
+// Ligado em 17/10/2026, depois que o usuário terminou de marcar "lenha" nas observações.
+const LENHA_ENABLED = true;
 
 type GroupDef = { key: string; label: string; hint: string; match: RegExp | null };
 
