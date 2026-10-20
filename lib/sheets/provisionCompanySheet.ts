@@ -160,6 +160,14 @@ export async function provisionCompanySheet(
 
   // Criada via OAuth da própria empresa: a planilha já nasce no Drive dela,
   // sem precisar de nenhum passo extra de compartilhamento.
+  // Espaço de pagamentos atrasados no fim de cada aba de mês (preenchimento manual).
+  try {
+    const { addOverdueSections } = await import("./overdueSection");
+    await addOverdueSections(sheets, spreadsheetId);
+  } catch (err) {
+    console.error("Não consegui criar o espaço de atrasados nas abas de mês:", err);
+  }
+
   return { spreadsheetId, sheetIdMap };
 }
 
