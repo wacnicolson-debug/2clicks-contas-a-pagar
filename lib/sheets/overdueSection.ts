@@ -79,16 +79,24 @@ export async function addOverdueSections(
       { range: `'${tab}'!H${sumRow}`, values: [[`=SUM(H${firstData}:H${lastData})`]] }
     );
 
-    const copyFormat = (fromRow: number, toRow: number): sheets_v4.Schema$Request => ({
-      copyPaste: {
-        source: { sheetId, startRowIndex: fromRow - 1, endRowIndex: fromRow, startColumnIndex: 0, endColumnIndex: 14 },
-        destination: { sheetId, startRowIndex: toRow - 1, endRowIndex: toRow, startColumnIndex: 0, endColumnIndex: 14 },
-        pasteType: "PASTE_FORMAT",
-      },
-    });
+    const cols = (x: number, y: number) => ({ startColumnIndex: x, endColumnIndex: y });
     requests.push(
-      copyFormat(1, titleRow), // faixa escura do título da aba
-      copyFormat(2, headerRow), // cabeçalho cinza
+      // título: faixa escura, texto branco em negrito transbordando pela faixa
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: titleRow - 1, endRowIndex: titleRow, ...cols(0, 14) },
+          cell: { userEnteredFormat: { backgroundColor: { red: 0.16, green: 0.28, blue: 0.24 }, wrapStrategy: "OVERFLOW_CELL", verticalAlignment: "MIDDLE", textFormat: { bold: true, fontSize: 12, foregroundColor: { red: 1, green: 1, blue: 1 } } } },
+          fields: "userEnteredFormat(backgroundColor,wrapStrategy,verticalAlignment,textFormat)",
+        },
+      },
+      // cabeçalho: cinza só nas colunas A–J
+      {
+        repeatCell: {
+          range: { sheetId, startRowIndex: headerRow - 1, endRowIndex: headerRow, ...cols(0, 10) },
+          cell: { userEnteredFormat: { backgroundColor: { red: 0.85, green: 0.85, blue: 0.85 }, wrapStrategy: "WRAP", verticalAlignment: "MIDDLE", textFormat: { bold: true } } },
+          fields: "userEnteredFormat(backgroundColor,wrapStrategy,verticalAlignment,textFormat)",
+        },
+      },
       {
         repeatCell: {
           range: { sheetId, startRowIndex: firstData - 1, endRowIndex: lastData, startColumnIndex: 2, endColumnIndex: 3 },
