@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSession } from "@/lib/auth/session";
+import { idsMarkedPaidInSheet } from "@/lib/dashboard/sheetPaid";
 import { prisma } from "@/lib/db/prisma";
 import { isGoogleTokenValid } from "@/lib/sheets/client";
 import { LogoutButton } from "./logout-button";
@@ -59,14 +60,23 @@ export default async function DashboardPage({
   const unsyncedSince = new Date(Date.now() - 5 * 60 * 1000);
   const startOfPrevMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() - 1, 1));
 
+  // Uma leitura só dos lançamentos a pagar do próximo mês; o que já está marcado como pago
+  // na planilha (PAGO ou CONCILIADO) sai da soma.
+  const payableTotals = payableSums(session.companyId, [
+    [today, tomorrow],
+    [tomorrow, dayAfterTomorrow],
+    [today, in7Days],
+    [today, in1Month],
+  ]);
+
   const [dueToday, dueTomorrow, due7Days, due1Month, expectedIncome, pendingPages, unsyncedCount, unreadDocuments] =
     await Promise.all([
-      sumPayables(session.companyId, today, tomorrow),
+      payableTotals.then((t) => t[0]),
       // "Amanhã" é só o dia de amanhã (1 dia) — não de amanhã até 7 dias, que
       // batia igualzinho com "Próximos 7 dias" e confundia o painel.
-      sumPayables(session.companyId, tomorrow, dayAfterTomorrow),
-      sumPayables(session.companyId, today, in7Days),
-      sumPayables(session.companyId, today, in1Month),
+      payableTotals.then((t) => t[1]),
+      payableTotals.then((t) => t[2]),
+      payableTotals.then((t) => t[3]),
       sumReceivables(session.companyId, today, in1Month),
       prisma.documentPage.findMany({
         where: { status: "AWAITING_USER_INPUT", document: { companyId: session.companyId } },
@@ -339,12 +349,21 @@ function Row({ label, value }: { label: string; value: number }) {
   );
 }
 
-async function sumPayables(companyId: string, from: Date, to: Date) {
-  const result = await prisma.transaction.aggregate({
+async function payableSums(companyId: string, windows: [Date, Date][]): Promise<number[]> {
+  const from = new Date(Math.min(...windows.map((w) => w[0].getTime())));
+  const to = new Date(Math.max(...windows.map((w) => w[1].getTime())));
+  const txs = await prisma.transaction.findMany({
     where: { companyId, kind: "PAYABLE", paid: false, dueDate: { gte: from, lt: to } },
-    _sum: { amount: true },
+    select: { id: true, amount: true, dueDate: true, sheetCellRef: true, supplier: { select: { name: true } } },
   });
-  return Number(result._sum.amount ?? 0);
+  const paidInSheet = await idsMarkedPaidInSheet(
+    companyId,
+    txs.map((t) => ({ id: t.id, dueDate: t.dueDate, sheetCellRef: t.sheetCellRef, supplierName: t.supplier.name }))
+  );
+  const open = txs.filter((t) => !paidInSheet.has(t.id));
+  return windows.map(([a, b]) =>
+    open.filter((t) => t.dueDate >= a && t.dueDate < b).reduce((sum, t) => sum + Number(t.amount), 0)
+  );
 }
 
 async function sumReceivables(companyId: string, from: Date, to: Date) {
