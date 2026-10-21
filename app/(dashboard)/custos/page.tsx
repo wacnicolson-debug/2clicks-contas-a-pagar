@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { costWhere, getRange, parseBase, parsePeriod, referenceDate, type DateBase, type Period } from "@/lib/costs/costRange";
+import { SAQUE_LABOR_PERCENT, saqueRoleOf, splitSaque, type SaqueRole } from "@/lib/costs/saque";
 
 export default async function CustosPage({
   searchParams,
@@ -26,15 +27,45 @@ export default async function CustosPage({
     _sum: { amount: true },
   });
 
-  const categoryIds = grouped.map((g) => g.categoryId).filter((id): id is string => !!id);
-  const categories = await prisma.category.findMany({ where: { id: { in: categoryIds } } });
+  // Todas as categorias da empresa: "Mão de obra" e "Outros" precisam existir na lista mesmo sem
+  // lançamento próprio no período, pra receberem a parte do saque.
+  const categories = await prisma.category.findMany({ where: { companyId: session.companyId } });
   const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
+  const idOfRole = (role: SaqueRole) => categories.find((c) => saqueRoleOf(c.name) === role)?.id ?? null;
 
-  const rows = grouped
-    .map((g) => ({
-      id: g.categoryId ?? "sem-categoria",
-      name: g.categoryId ? (categoryNameById.get(g.categoryId) ?? "Categoria removida") : "Sem categoria",
-      amount: Number(g._sum.amount ?? 0),
+  // Saque (CAIXA): só informativo; 80% entra em Mão de obra e 20% em Outros.
+  const saqueId = idOfRole("saque");
+  const saqueLines = saqueId
+    ? await prisma.transaction.findMany({
+        where: { AND: [costWhere(session.companyId, base, start, end)], categoryId: saqueId },
+        select: { amount: true },
+      })
+    : [];
+  let laborShare = 0;
+  let othersShare = 0;
+  for (const l of saqueLines) {
+    const s = splitSaque(Number(l.amount));
+    laborShare += s.labor;
+    othersShare += s.others;
+  }
+  laborShare = Math.round(laborShare * 100) / 100;
+  othersShare = Math.round(othersShare * 100) / 100;
+  const shareByCategoryId = new Map<string, number>();
+  const laborId = idOfRole("labor");
+  const othersId = idOfRole("others");
+  if (laborId && laborShare > 0) shareByCategoryId.set(laborId, laborShare);
+  if (othersId && othersShare > 0) shareByCategoryId.set(othersId, othersShare);
+
+  const byCategory = new Map(grouped.map((g) => [g.categoryId ?? "sem-categoria", Number(g._sum.amount ?? 0)]));
+  for (const id of shareByCategoryId.keys()) if (!byCategory.has(id)) byCategory.set(id, 0);
+
+  const rows = [...byCategory.entries()]
+    .map(([id, own]) => ({
+      id,
+      name: id === "sem-categoria" ? "Sem categoria" : (categoryNameById.get(id) ?? "Categoria removida"),
+      amount: own + (shareByCategoryId.get(id) ?? 0),
+      saqueShare: shareByCategoryId.get(id) ?? 0,
+      informational: id === saqueId,
     }))
     .sort((a, b) => b.amount - a.amount);
 
@@ -49,8 +80,10 @@ export default async function CustosPage({
   const today = new Date();
   const isCurrentPeriod = today >= start && today < end;
 
-  const total = rows.reduce((sum, r) => sum + r.amount, 0);
+  // O CAIXA não entra na soma (já está distribuído em Mão de obra e Outros).
+  const total = rows.filter((r) => !r.informational).reduce((sum, r) => sum + r.amount, 0);
   const maxAmount = Math.max(...rows.map((r) => r.amount), 1);
+  const BRL = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
   const periodTabs: { key: Period; label: string }[] = [
     { key: "mes", label: "Mensal" },
@@ -152,23 +185,31 @@ export default async function CustosPage({
                 <Link
                   key={row.id}
                   href={detailHref}
-                  className="block rounded-md -mx-2 px-2 py-1 hover:bg-neutral-50"
+                  className={`block rounded-md -mx-2 px-2 py-1 hover:bg-neutral-50 ${row.informational ? "opacity-50" : ""}`}
                   title="Ver tudo que compõe esse gasto"
                 >
                   <div className="flex justify-between text-sm mb-1">
-                    <span className="font-medium">{row.name}</span>
-                    <span className="text-neutral-500 tabular-nums">
-                      {row.amount.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}
-                      {" · "}
-                      {pct.toFixed(0)}%
+                    <span className={row.informational ? "font-medium text-neutral-400" : "font-medium"}>{row.name}</span>
+                    <span className={`tabular-nums ${row.informational ? "text-neutral-400" : "text-neutral-500"}`}>
+                      {BRL(row.amount)}
+                      {row.informational ? "" : ` · ${pct.toFixed(0)}%`}
                     </span>
                   </div>
                   <div className="h-2 bg-neutral-100 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-emerald-700 rounded-full"
+                      className={`h-full rounded-full ${row.informational ? "bg-neutral-300" : "bg-emerald-700"}`}
                       style={{ width: `${barWidth}%` }}
                     />
                   </div>
+                  {row.informational && (
+                    <p className="text-xs text-neutral-400 mt-1">
+                      Entrou {BRL(row.amount)} via saque (fora da soma) → {BRL(laborShare)} ({SAQUE_LABOR_PERCENT}%) em Mão de obra +{" "}
+                      {BRL(othersShare)} ({100 - SAQUE_LABOR_PERCENT}%) em Outros
+                    </p>
+                  )}
+                  {row.saqueShare > 0 && (
+                    <p className="text-xs text-neutral-400 mt-1">inclui {BRL(row.saqueShare)} via saque</p>
+                  )}
                 </Link>
               );
             })}

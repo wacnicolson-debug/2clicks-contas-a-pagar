@@ -3,6 +3,9 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { costWhere, getRange, parseBase, parsePeriod, referenceDate } from "@/lib/costs/costRange";
 import { costGroupLabel, costGroupOf, groupModeFor, groupsFor } from "@/lib/costs/costGroups";
+import { SAQUE_LABOR_PERCENT, saqueRoleOf, splitSaque } from "@/lib/costs/saque";
+
+const SAQUE_LABOR_PERCENT_FOR = { labor: SAQUE_LABOR_PERCENT, others: 100 - SAQUE_LABOR_PERCENT };
 
 const BRL = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const BR_DATE = (d: Date) => d.toISOString().slice(0, 10).split("-").reverse().join("/");
@@ -35,7 +38,7 @@ export default async function CustoDetalhePage({
     : await prisma.category.findFirst({ where: { id: categoria, companyId: session.companyId } });
   const categoryName = semCategoria ? "Sem categoria" : (category?.name ?? "Categoria removida");
 
-  const all = await prisma.transaction.findMany({
+  const own = await prisma.transaction.findMany({
     where: {
       AND: [costWhere(session.companyId, base, start, end)],
       categoryId: semCategoria ? null : categoria,
@@ -44,6 +47,29 @@ export default async function CustoDetalhePage({
     orderBy: [{ dueDate: "asc" }, { amount: "desc" }],
     take: MAX_ROWS,
   });
+  const all = own.map((t) => ({ ...t, amount: Number(t.amount), saqueOf: null as number | null }));
+
+  // Mão de obra e Outros recebem uma parte dos saques (CAIXA): as linhas do saque entram aqui
+  // só com a parte que cabe a esta categoria, marcadas como "via saque".
+  const role = saqueRoleOf(categoryName);
+  if (role === "labor" || role === "others") {
+    const saqueCategory = (await prisma.category.findMany({ where: { companyId: session.companyId } })).find(
+      (c) => saqueRoleOf(c.name) === "saque"
+    );
+    if (saqueCategory) {
+      const saques = await prisma.transaction.findMany({
+        where: { AND: [costWhere(session.companyId, base, start, end)], categoryId: saqueCategory.id },
+        include: { supplier: { select: { name: true } } },
+        orderBy: [{ dueDate: "asc" }, { amount: "desc" }],
+      });
+      for (const s of saques) {
+        const original = Number(s.amount);
+        const share = splitSaque(original)[role];
+        if (share > 0) all.push({ ...s, amount: share, saqueOf: original });
+      }
+      all.sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime() || b.amount - a.amount);
+    }
+  }
 
   const baseQuery = `periodo=${period}&base=${base}${refDateParam ? `&data=${refDateParam}` : ""}`;
   const backToTotals = `/custos?${baseQuery}`;
@@ -54,7 +80,7 @@ export default async function CustoDetalhePage({
   if (mode && !grupo) {
     const sums = groupsFor(mode).map((g) => {
       const list = all.filter((t) => costGroupOf(mode, t.description) === g.key);
-      return { ...g, amount: list.reduce((s, t) => s + Number(t.amount), 0), count: list.length };
+      return { ...g, amount: list.reduce((s, t) => s + t.amount, 0), count: list.length };
     }).filter((g) => g.count > 0);
     const total = sums.reduce((s, g) => s + g.amount, 0);
     const maxAmount = Math.max(...sums.map((g) => g.amount), 1);
@@ -109,13 +135,14 @@ export default async function CustoDetalhePage({
 
   // ---- Lista item a item (categoria inteira, ou uma empresa dentro de Mão de obra/Impostos) ----
   const transactions = grupo && mode ? all.filter((t) => costGroupOf(mode, t.description) === grupo) : all;
-  const total = transactions.reduce((sum, t) => sum + Number(t.amount), 0);
+  const isSaqueCategory = role === "saque";
+  const total = transactions.reduce((sum, t) => sum + t.amount, 0);
 
   // Subtotal por fornecedor: responde "de quem foi esse gasto" sem precisar somar a lista.
   const bySupplier = new Map<string, { amount: number; count: number }>();
   for (const t of transactions) {
     const cur = bySupplier.get(t.supplier.name) ?? { amount: 0, count: 0 };
-    bySupplier.set(t.supplier.name, { amount: cur.amount + Number(t.amount), count: cur.count + 1 });
+    bySupplier.set(t.supplier.name, { amount: cur.amount + t.amount, count: cur.count + 1 });
   }
   const suppliers = [...bySupplier.entries()].sort((a, b) => b[1].amount - a[1].amount);
 
@@ -136,6 +163,11 @@ export default async function CustoDetalhePage({
             {label} · {baseLabel} · <span className="font-medium text-neutral-700">{BRL(total)}</span> em{" "}
             {transactions.length} {transactions.length === 1 ? "lançamento" : "lançamentos"}
           </p>
+          {isSaqueCategory && (
+            <p className="text-xs text-neutral-400 mt-1">
+              Só informativo, fora da soma da distribuição: {SAQUE_LABOR_PERCENT}% entra em Mão de obra e {100 - SAQUE_LABOR_PERCENT}% em Outros.
+            </p>
+          )}
         </header>
 
         {transactions.length === 0 ? (
@@ -188,8 +220,15 @@ export default async function CustoDetalhePage({
                       <td className="px-4 py-2 text-neutral-500 whitespace-nowrap">
                         {t.paymentMethod ? (PAYMENT_LABEL[t.paymentMethod] ?? t.paymentMethod) : "—"}
                       </td>
-                      <td className="px-4 py-2 text-neutral-500">{t.description ?? ""}</td>
-                      <td className="px-4 py-2 text-right tabular-nums whitespace-nowrap">{BRL(Number(t.amount))}</td>
+                      <td className="px-4 py-2 text-neutral-500">
+                        {t.description ?? ""}
+                        {t.saqueOf !== null && (
+                          <span className="block text-xs text-neutral-400">
+                            via saque: {SAQUE_LABOR_PERCENT_FOR[role as "labor" | "others"]}% de {BRL(t.saqueOf)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-right tabular-nums whitespace-nowrap">{BRL(t.amount)}</td>
                       <td className="px-4 py-2 whitespace-nowrap">
                         <Link href={`/lancamentos/${t.id}/editar`} className="text-emerald-700 hover:underline">
                           Editar
