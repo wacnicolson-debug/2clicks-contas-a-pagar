@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { costWhere, getRange, parseBase, parsePeriod, referenceDate } from "@/lib/costs/costRange";
 import { costGroupLabel, costGroupOf, groupModeFor, groupsFor } from "@/lib/costs/costGroups";
 import { SAQUE_LABOR_PERCENT, saqueRoleOf, splitSaque } from "@/lib/costs/saque";
+import { syncObservationsFromSheet } from "@/lib/sheets/sheetObservations";
 
 const SAQUE_LABOR_PERCENT_FOR = { labor: SAQUE_LABOR_PERCENT, others: 100 - SAQUE_LABOR_PERCENT };
 
@@ -23,6 +24,8 @@ export default async function CustoDetalhePage({
 }) {
   const session = await getSession();
   if (!session) return null;
+
+  await syncObservationsFromSheet(session.companyId);
 
   const { categoria } = await params;
   const query = await searchParams;

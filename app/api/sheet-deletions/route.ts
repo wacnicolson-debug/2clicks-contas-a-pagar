@@ -1,6 +1,7 @@
 import { NextResponse, after } from "next/server";
 import { getSession } from "@/lib/auth/session";
 import { healAllSheets, processSheetDeletions } from "@/lib/sheets/sheetDeletions";
+import { syncObservationsFromSheet } from "@/lib/sheets/sheetObservations";
 
 // Chamada pela própria tela (AutoRefresh) de tempos em tempos: apaga os
 // lançamentos marcados na coluna EXCLUIR da planilha. Nunca devolve erro pra
@@ -15,6 +16,8 @@ export async function POST() {
   // O realinhamento dos blocos roda DEPOIS da resposta: nunca atrasa uma
   // exclusão marcada na planilha.
   after(() => healAllSheets(session.companyId));
+  // Observação digitada direto na planilha (MRC, Santa Luzia, lenha...) passa pro app.
+  after(() => syncObservationsFromSheet(session.companyId));
 
   try {
     const result = await processSheetDeletions(session.companyId);

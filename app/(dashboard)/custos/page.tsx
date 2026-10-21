@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { costWhere, getRange, parseBase, parsePeriod, referenceDate, type DateBase, type Period } from "@/lib/costs/costRange";
 import { SAQUE_LABOR_PERCENT, saqueRoleOf, splitSaque, type SaqueRole } from "@/lib/costs/saque";
+import { syncObservationsFromSheet } from "@/lib/sheets/sheetObservations";
 
 export default async function CustosPage({
   searchParams,
@@ -11,6 +12,9 @@ export default async function CustosPage({
 }) {
   const session = await getSession();
   if (!session) return null;
+
+  // A divisão por empresa/lenha vem da observação: copia antes o que foi digitado na planilha.
+  await syncObservationsFromSheet(session.companyId);
 
   const params = await searchParams;
   const period: Period = parsePeriod(params.periodo);

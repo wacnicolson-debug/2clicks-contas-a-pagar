@@ -301,6 +301,7 @@ export async function rebuildDayBlock(
 
   const dataRanges: { range: string; values: (string | number | boolean)[][] }[] = [];
   const refUpdates: { id: string; ref: string }[] = [];
+  const carriedObservations: { id: string; description: string }[] = [];
 
   // Cor de fundo FIXA da linha (ex: o amarelo pintado à mão de uma conta paga)
   // fica presa à POSIÇÃO, não ao lançamento — como o bloco reordena por valor,
@@ -391,6 +392,19 @@ export async function rebuildDayBlock(
       consumed.add(matchIndex);
       carriedFills.push(fillInfo?.fills.get(oldRowNumbers[matchIndex]) ?? null);
       const row = oldRows[matchIndex];
+      // Observação digitada à mão na planilha e ainda não copiada pro app: leva junto, senão a
+      // regravação do dia apagaria. (O lançamento que está sendo editado fica de fora: a edição
+      // pelo app vale mais que o texto antigo da linha.)
+      const typedObservation = String(row[offset + 8] ?? "").trim();
+      if (
+        typedObservation &&
+        typedObservation !== (t.description ?? "").trim() &&
+        t.id !== options?.previous?.id &&
+        t.id !== options?.excludeTransactionId
+      ) {
+        t.description = typedObservation;
+        carriedObservations.push({ id: t.id, description: typedObservation });
+      }
       checkboxRows.push([row[11] === true, row[12] === true]);
       excluirRows.push([excluirIndex !== null && row[excluirIndex] === true]);
       conciliadoRows.push([conciliadoIndex !== null && row[conciliadoIndex] === true]);
@@ -494,6 +508,9 @@ export async function rebuildDayBlock(
         })
       )
     );
+  }
+  for (const c of carriedObservations) {
+    await prisma.transaction.update({ where: { id: c.id }, data: { description: c.description } });
   }
 }
 
