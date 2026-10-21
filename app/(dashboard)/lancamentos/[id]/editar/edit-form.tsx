@@ -33,7 +33,7 @@ export function EditTransactionForm({
   const [dueDate, setDueDate] = useState(transaction.dueDate);
   const [noteNumber, setNoteNumber] = useState(transaction.noteNumber ?? "");
   const [observacao, setObservacao] = useState(transaction.description ?? "");
-  const [status, setStatus] = useState<Status>(
+  const [status] = useState<Status>(
     isCliente ? (transaction.paid ? "PAGO" : "A_PAGAR") : (transaction.paymentStatus ?? "A_PAGAR")
   );
   const [loading, setLoading] = useState(false);
@@ -268,22 +268,6 @@ export function EditTransactionForm({
             className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
           />
         </div>
-
-        {isCliente && (
-          <fieldset>
-            <legend className="text-sm font-medium mb-2">Recebido ou a receber?</legend>
-            <div className="flex gap-4 text-sm">
-              <label className="flex items-center gap-2">
-                <input type="radio" checked={status === "PAGO"} onChange={() => setStatus("PAGO")} />
-                Recebido
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="radio" checked={status === "A_PAGAR"} onChange={() => setStatus("A_PAGAR")} />
-                A receber
-              </label>
-            </div>
-          </fieldset>
-        )}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
 
