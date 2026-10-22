@@ -178,6 +178,7 @@ export default async function LancamentosPage({
                   <th className="px-4 py-2 font-medium">Vencimento</th>
                   <th className="px-4 py-2 font-medium">Valor</th>
                   <th className="px-4 py-2 font-medium">Categoria</th>
+                  <th className="px-4 py-2 font-medium">Observação</th>
                   <th className="px-4 py-2 font-medium">Planilha</th>
                   <th className="px-4 py-2 font-medium"></th>
                 </tr>
@@ -208,6 +209,7 @@ export default async function LancamentosPage({
                       })}
                     </td>
                     <td className="px-4 py-2 text-neutral-500">{t.category?.name ?? "—"}</td>
+                    <td className="px-4 py-2 text-neutral-700">{t.description?.trim() || <span className="text-neutral-300">—</span>}</td>
                     <td className="px-4 py-2 text-neutral-500 whitespace-nowrap">
                       {t.sheetCellRef === null ? (
                         <span
