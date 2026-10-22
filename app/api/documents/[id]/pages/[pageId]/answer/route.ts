@@ -202,7 +202,7 @@ export async function POST(
           dueDate: new Date(dueDateStr),
           noteDate,
           description: withAdjustNote(
-            body.description,
+            body.description?.trim() || ((docPage.rawExtraction as { defaultObservation?: string | null }).defaultObservation ?? null),
             adjusted.note ?? ((docPage.rawExtraction as { dateAdjustNote?: string | null }).dateAdjustNote ?? null)
           ),
           paymentStatus: effectiveKind === "FORNECEDOR" ? (effectivePaymentStatus ?? undefined) : undefined,
@@ -337,7 +337,10 @@ async function resolveOtherPendingPagesForSupplier(
             supplierId: supplier.id,
             amount: installment.amount,
             dueDate: new Date(adjusted.date),
-            description: adjusted.note,
+            description: withAdjustNote(
+              (page.rawExtraction as { defaultObservation?: string | null }).defaultObservation ?? null,
+              adjusted.note
+            ),
             paymentStatus: supplier.kind === "FORNECEDOR" ? pageStatus : undefined,
             paymentMethod: supplier.kind === "FORNECEDOR" ? (supplier.paymentMethod ?? undefined) : undefined,
             pixKey: supplier.kind === "FORNECEDOR" && supplier.paymentMethod === "PIX" ? supplier.pixKey : undefined,

@@ -6,7 +6,8 @@ import { extractPaymentListLines, ExtractedPaymentLine } from "@/lib/ai/extractP
 import { resolveSupplier, needsOnboardingQuestions } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
-import { adjustPaymentDate } from "@/lib/utils/businessDays";
+import { adjustPaymentDate, withAdjustNote } from "@/lib/utils/businessDays";
+import { parseUploadObservation } from "@/lib/utils/uploadObservation";
 
 // Chave de "impressão digital" de um pagamento: data+valor+favorecido
 // normalizado. Dois pagamentos iguais pro mesmo favorecido no mesmo dia (ex:
@@ -51,6 +52,8 @@ export const processPaymentList = inngest.createFunction(
   { id: "process-payment-list", retries: 3, triggers: [{ event: "payment-list/uploaded" }] },
   async ({ event, step }) => {
     const { documentId } = event.data;
+    // Observação escolhida na tela de envio (MRC / Santa Luzia): vai em todos os lançamentos da lista.
+    const observation = parseUploadObservation(event.data.observation);
 
     const document = await step.run("load-document", async () => {
       return prisma.document.findUniqueOrThrow({ where: { id: documentId } });
@@ -149,6 +152,8 @@ export const processPaymentList = inngest.createFunction(
               duplicateOfPageNumber: null,
               knownPaymentMethod: line.paymentMethod,
               knownPixKey: line.pixKey,
+              // lido de novo na tela de perguntas / resposta, se o lançamento só sair depois
+              defaultObservation: observation,
             },
             supplierId: supplier.id,
             confidence: 1,
@@ -179,7 +184,7 @@ export const processPaymentList = inngest.createFunction(
             pixKey: line.pixKey ?? supplier.pixKey,
             categoryId: supplier.defaultCategoryId,
             noteNumber: line.noteNumber,
-            description: dateInfo[index].note,
+            description: withAdjustNote(observation, dateInfo[index].note),
             paid: true,
             createdByUserId: document.uploadedById,
           },

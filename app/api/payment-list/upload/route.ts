@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { uploadDocumentFile } from "@/lib/storage/supabase";
 import { inngest } from "@/lib/inngest/client";
+import { parseUploadObservation } from "@/lib/utils/uploadObservation";
 
 export async function POST(request: NextRequest) {
   const session = await getSession();
@@ -63,7 +64,7 @@ export async function POST(request: NextRequest) {
 
   await inngest.send({
     name: "payment-list/uploaded",
-    data: { documentId: document.id },
+    data: { documentId: document.id, observation: parseUploadObservation(formData.get("observation")) },
   });
 
   return NextResponse.json({ documentId: document.id });

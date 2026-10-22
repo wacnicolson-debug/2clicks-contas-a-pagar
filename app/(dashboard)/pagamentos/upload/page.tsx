@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { filesFromClipboard } from "@/lib/utils/clipboardFiles";
+import { UPLOAD_OBSERVATIONS } from "@/lib/utils/uploadObservation";
 
 type FileStatus = "pending" | "uploading" | "done" | "error";
 
@@ -23,6 +24,8 @@ const STATUS_LABEL: Record<FileStatus, string> = {
 export default function PaymentListUploadPage() {
   const [entries, setEntries] = useState<FileEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  // Observação aplicada a todos os lançamentos dos arquivos enviados (a escolha fica entre os envios).
+  const [observation, setObservation] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleFilesSelected(fileList: FileList | null) {
@@ -61,6 +64,7 @@ export default function PaymentListUploadPage() {
 
       const formData = new FormData();
       formData.append("file", entries[i].file);
+      if (observation) formData.append("observation", observation);
 
       try {
         const res = await fetch("/api/payment-list/upload", {
@@ -121,6 +125,26 @@ export default function PaymentListUploadPage() {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <fieldset disabled={submitting} className="space-y-1">
+            <legend className="text-sm font-medium mb-1">Empresa dos lançamentos deste envio</legend>
+            <div className="flex flex-wrap gap-4 text-sm">
+              {UPLOAD_OBSERVATIONS.map((o) => (
+                <label key={o.value} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={observation === o.value}
+                    onChange={(e) => setObservation(e.target.checked ? o.value : "")}
+                  />
+                  {o.label}
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-neutral-400">
+              Marcando uma, o nome vai na observação de todos os lançamentos (e na coluna Observações da planilha). Sem
+              nenhuma marcada, é GLM. A escolha fica até você mudar, então desmarque ao trocar de empresa.
+            </p>
+          </fieldset>
+
           <input
             ref={fileInputRef}
             type="file"
