@@ -89,6 +89,15 @@ export function locateDayBlocks(
       const next = starts.get(day + 1);
       if (next === undefined) continue;
       end1 = next - 1;
+      // Linha de total digitada entre os dias (ex: "TOTAL SEMANA 1 — DIA 2", texto na coluna Dia)
+      // não faz parte do bloco: o app nunca grava nela, senão apagaria o total.
+      for (let r = start1 + 1; r <= end1; r++) {
+        const cell = body[r - FIRST_DATA_ROW]?.[diaCol];
+        if (typeof cell === "string" && cell.trim() !== "") {
+          end1 = r - 1;
+          break;
+        }
+      }
     } else {
       // O último dia não tem "dia seguinte": vai até a linha antes do "TOTAL DO MÊS"
       // (texto na coluna Dia), pra o bloco crescer junto quando linhas são
