@@ -12,8 +12,8 @@ import { normalizeText } from "@/lib/utils/normalizeText";
 //  - a linha é achada pelo CONTEÚDO (dia + fornecedor + valor), nunca só pela posição;
 //  - se a linha não casa com exatamente 1 lançamento, é ignorada;
 //  - célula vazia nunca apaga a observação do banco (pra limpar, use Editar no app);
-//  - roda no máximo a cada 45 s por empresa (cota de leitura do Google).
-const THROTTLE_MS = 45 * 1000;
+//  - roda no máximo a cada 90 s por empresa (cota de leitura do Google).
+const THROTTLE_MS = 90 * 1000;
 const lastRun = new Map<string, number>();
 const running = new Set<string>();
 

@@ -30,6 +30,10 @@ const LAST_BLOCK_ROW1 = HEADER_ROWS + DAYS_IN_BLOCK * ROWS_PER_DAY;
 // volta), a próxima tenta de novo depois de 60 s em vez de ficar bloqueada.
 const running = new Map<string, number>();
 const RUNNING_STALE_MS = 60 * 1000;
+// Cada aba aberta pergunta a cada 8 s; com várias abas isso estourava a cota de leitura do
+// Google (60 por minuto). Entre duas conferências da mesma empresa passa pelo menos isto.
+const MIN_GAP_MS = 15 * 1000;
+const lastFinished = new Map<string, number>();
 
 // Onde o app cria a coluna EXCLUIR quando a aba ainda não tem uma (T, bem
 // longe de PAGO/CONFERIDO pra não marcar sem querer). Depois de criada, o
@@ -447,6 +451,8 @@ export async function processSheetDeletions(
 ): Promise<{ deleted: number; unmatched: number }> {
   const startedAt = running.get(companyId);
   if (startedAt && Date.now() - startedAt < RUNNING_STALE_MS) return { deleted: 0, unmatched: 0 };
+  const finishedAt = lastFinished.get(companyId);
+  if (finishedAt && Date.now() - finishedAt < MIN_GAP_MS) return { deleted: 0, unmatched: 0 };
   running.set(companyId, Date.now());
   try {
     const company = await prisma.company.findUnique({
@@ -632,5 +638,6 @@ export async function processSheetDeletions(
     return { deleted, unmatched };
   } finally {
     running.delete(companyId);
+    lastFinished.set(companyId, Date.now());
   }
 }

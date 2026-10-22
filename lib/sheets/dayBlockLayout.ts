@@ -1,5 +1,6 @@
 import type { sheets_v4 } from "googleapis";
 import { normalizeText } from "@/lib/utils/normalizeText";
+import { withQuotaRetry } from "./quotaRetry";
 
 // Colunas que o app grava em cada linha do bloco do dia: Dia, Data de
 // vencimento, Favorecido, Descrição, Forma de pagamento, PIX, Valor,
@@ -213,14 +214,16 @@ export async function readDayTabState(params: {
   totalCol: number | null;
   located: Map<number, DayBlock>;
 }> {
-  const res = await params.sheets.spreadsheets.values.get({
-    spreadsheetId: params.spreadsheetId,
-    range: `'${params.tabName}'!A2:Z${SCAN_LAST_ROW}`,
-    // Fórmulas aparecem como texto ("=IF(...") — é assim que se acha o começo
-    // de cada bloco; o resto vem como valor bruto (número continua número).
-    valueRenderOption: "FORMULA",
-    dateTimeRenderOption: "FORMATTED_STRING",
-  });
+  const res = await withQuotaRetry(() =>
+    params.sheets.spreadsheets.values.get({
+      spreadsheetId: params.spreadsheetId,
+      range: `'${params.tabName}'!A2:Z${SCAN_LAST_ROW}`,
+      // Fórmulas aparecem como texto ("=IF(...") — é assim que se acha o começo
+      // de cada bloco; o resto vem como valor bruto (número continua número).
+      valueRenderOption: "FORMULA",
+      dateTimeRenderOption: "FORMATTED_STRING",
+    })
+  );
   const values = (res.data.values ?? []) as unknown[][];
   const header = values[0] ?? [];
   const body = values.slice(1);

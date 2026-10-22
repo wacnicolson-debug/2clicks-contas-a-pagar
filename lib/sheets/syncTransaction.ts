@@ -1,6 +1,7 @@
 import type { sheets_v4 } from "googleapis";
 import { prisma } from "@/lib/db/prisma";
 import { getGoogleClientsForCompany } from "./client";
+import { withQuotaRetry } from "./quotaRetry";
 import { getOrCreateCompanySheetForYear } from "./getOrCreateCompanySheet";
 import { PAID_LOG_TAB, RECEBIMENTOS_TAB, recebimentosMonthBlockRows } from "./provisionCompanySheet";
 import { toBRDateString } from "@/lib/utils/formatDateBR";
@@ -483,13 +484,15 @@ export async function rebuildDayBlock(
     }
   }
 
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId,
-    requestBody: {
-      valueInputOption: "USER_ENTERED",
-      data: dataRanges,
-    },
-  });
+  await withQuotaRetry(() =>
+    sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: "USER_ENTERED",
+        data: dataRanges,
+      },
+    })
+  );
 
   if (formatRequests.length > 0) {
     try {
@@ -525,12 +528,14 @@ async function readRowFills(
   column: number
 ): Promise<{ sheetId: number; fills: Map<number, sheets_v4.Schema$Color> }> {
   const letter = columnLetter(column);
-  const res = await sheets.spreadsheets.get({
-    spreadsheetId,
-    ranges: [`'${tabName}'!${letter}${FIRST_DATA_ROW}:${letter}${SCAN_LAST_ROW}`],
-    includeGridData: true,
-    fields: "sheets(properties(sheetId),data(startRow,rowData(values(userEnteredFormat(backgroundColor)))))",
-  });
+  const res = await withQuotaRetry(() =>
+    sheets.spreadsheets.get({
+      spreadsheetId,
+      ranges: [`'${tabName}'!${letter}${FIRST_DATA_ROW}:${letter}${SCAN_LAST_ROW}`],
+      includeGridData: true,
+      fields: "sheets(properties(sheetId),data(startRow,rowData(values(userEnteredFormat(backgroundColor)))))",
+    })
+  );
   const sheet = res.data.sheets?.[0];
   const sheetId = sheet?.properties?.sheetId;
   if (sheetId == null) throw new Error(`Aba ${tabName} não encontrada pra ler as cores.`);
