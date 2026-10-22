@@ -198,7 +198,9 @@ export default async function LancamentosPage({
                         ({t.kind === "RECEIVABLE" ? "cliente" : "fornecedor"})
                       </span>
                     </td>
-                    <td className="px-4 py-2 text-neutral-500">{t.noteNumber ?? "—"}</td>
+                    <td className="px-4 py-2 text-neutral-500 max-w-[7rem] truncate" title={t.noteNumber ?? undefined}>
+                      {t.noteNumber ?? "—"}
+                    </td>
                     <td className="px-4 py-2 tabular-nums">
                       {t.dueDate.toISOString().slice(0, 10).split("-").reverse().join("/")}
                     </td>
