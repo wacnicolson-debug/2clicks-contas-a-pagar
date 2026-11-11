@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifyToken, SESSION_COOKIE_NAME } from "@/lib/auth/session";
+import { verifyToken, renewedSessionToken, SESSION_COOKIE_NAME, SESSION_COOKIE_OPTIONS } from "@/lib/auth/session";
 
 export async function proxy(request: NextRequest) {
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
@@ -16,7 +16,13 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
-  return NextResponse.next();
+  const response = NextResponse.next();
+  // Quem está usando continua logado: renova o login (mais 7 dias) a cada meio dia de uso.
+  if (session) {
+    const renewed = await renewedSessionToken(session);
+    if (renewed) response.cookies.set(SESSION_COOKIE_NAME, renewed, SESSION_COOKIE_OPTIONS);
+  }
+  return response;
 }
 
 export const config = {

@@ -30,21 +30,36 @@ export async function verifyPassword(
   return bcrypt.compare(password, passwordHash);
 }
 
-export async function createSession(payload: SessionPayload): Promise<void> {
-  const token = await new SignJWT(payload)
+async function signSessionToken(payload: SessionPayload): Promise<string> {
+  return new SignJWT({ userId: payload.userId, companyId: payload.companyId, username: payload.username })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setExpirationTime(`${SESSION_DURATION_SECONDS}s`)
     .sign(getSecretKey());
+}
+
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax" as const,
+  path: "/",
+  maxAge: SESSION_DURATION_SECONDS,
+};
+
+// Sessão deslizante: quem está usando o app não pode ser deslogado no meio do trabalho. Quando o
+// login tem mais de 12 h, devolve um token novo (mais 7 dias); senão null.
+export async function renewedSessionToken(payload: SessionPayload & { exp?: number }): Promise<string | null> {
+  if (!payload.exp) return null;
+  const ageSeconds = SESSION_DURATION_SECONDS - (payload.exp - Math.floor(Date.now() / 1000));
+  if (ageSeconds < 12 * 60 * 60) return null;
+  return signSessionToken(payload);
+}
+
+export async function createSession(payload: SessionPayload): Promise<void> {
+  const token = await signSessionToken(payload);
 
   const cookieStore = await cookies();
-  cookieStore.set(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_DURATION_SECONDS,
-  });
+  cookieStore.set(COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
 }
 
 export async function verifyToken(token: string): Promise<SessionPayload | null> {
