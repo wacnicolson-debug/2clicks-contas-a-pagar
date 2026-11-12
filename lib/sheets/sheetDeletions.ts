@@ -32,7 +32,7 @@ const running = new Map<string, number>();
 const RUNNING_STALE_MS = 60 * 1000;
 // Cada aba aberta pergunta a cada 8 s; com várias abas isso estourava a cota de leitura do
 // Google (60 por minuto). Entre duas conferências da mesma empresa passa pelo menos isto.
-const MIN_GAP_MS = 15 * 1000;
+const MIN_GAP_MS = 5 * 1000;
 const lastFinished = new Map<string, number>();
 
 // Onde o app cria a coluna EXCLUIR quando a aba ainda não tem uma (T, bem
