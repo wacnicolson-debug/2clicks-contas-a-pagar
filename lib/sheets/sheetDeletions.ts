@@ -586,7 +586,20 @@ export async function processSheetDeletions(
         // O dia vem da própria linha (coluna Dia), não da posição dela — a
         // planilha pode ter linhas inseridas/apagadas entre os dias.
         const day = validDay(row[offset]);
-        if (!supplierName || amount === null) continue; // linha vazia marcada: nada a apagar
+        if (!supplierName) {
+          // Linha SEM favorecido marcada: não há lançamento pra apagar, mas a marcação (e restos como data,
+          // forma de pagamento ou categoria) ficava parada pra sempre e parecia que o excluir não funcionava.
+          // Limpa os dados da linha (a estrutura não muda) e desmarca a caixinha.
+          if (day !== null) {
+            try {
+              await blankDayRow({ companyId, year: companySheet.year, tabName: f.tab, row1: f.row1, day });
+            } catch (err) {
+              console.error(`Não consegui limpar a linha marcada sem favorecido (${f.tab} linha ${f.row1}):`, err);
+            }
+          }
+          continue;
+        }
+        if (amount === null) continue; // tem favorecido mas não valor: não dá pra achar o lançamento, deixa como está
         if (day === null) {
           unmatched++;
           continue;
