@@ -612,17 +612,17 @@ function buildDayRowValues(t: DayRowSource, costMonthDiffers: boolean): (string 
   return [
     t.dueDate.getUTCDate(),
     toBRDateString(t.dueDate),
-    t.supplier.name,
+    t.supplier.name.toUpperCase(),
     "",
-    t.paymentMethod ? PAYMENT_METHOD_LABEL[t.paymentMethod] : "",
+    t.paymentMethod ? PAYMENT_METHOD_LABEL[t.paymentMethod].toUpperCase() : "",
     t.pixKey ?? "",
     Number(t.amount),
     // Custo divergente do vencimento: deixa em branco aqui (senão conta 2x —
     // já é somado sob o mês certo no histórico oculto) — a linha ainda mostra
     // fornecedor/valor/data pra controle de pagamento.
-    costMonthDiffers ? "" : t.category?.name ?? "",
-    // Observação digitada pelo usuário (tela de perguntas ou Editar), se houver.
-    t.description ?? "",
+    costMonthDiffers ? "" : (t.category?.name ?? "").toUpperCase(),
+    // Observação digitada pelo usuário (tela de perguntas ou Editar), se houver. A planilha é toda em maiúsculas.
+    (t.description ?? "").toUpperCase(),
   ];
 }
 
@@ -639,14 +639,14 @@ function buildReceivableRowValues(t: {
   return [
     dueDateStr,
     t.paid ? dueDateStr : "",
-    t.supplier.name,
+    t.supplier.name.toUpperCase(),
     "",
-    t.category?.name ?? "",
+    (t.category?.name ?? "").toUpperCase(),
     "",
     "",
     amount,
     t.paid ? amount : "",
-    t.description ?? "",
+    (t.description ?? "").toUpperCase(),
   ];
 }
 
