@@ -22,6 +22,7 @@ export default function ManualTransactionPage() {
   const [pixKey, setPixKey] = useState("");
   const [categoryName, setCategoryName] = useState("");
   const [noteNumber, setNoteNumber] = useState("");
+  const [observacao, setObservacao] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
@@ -50,6 +51,7 @@ export default function ManualTransactionPage() {
         pixKey: kind === "FORNECEDOR" && method === "PIX" ? pixKey : undefined,
         categoryName: categoryName || undefined,
         noteNumber: noteNumber || undefined,
+        description: observacao || undefined,
       }),
     });
 
@@ -221,6 +223,19 @@ export default function ManualTransactionPage() {
               id="noteNumber"
               value={noteNumber}
               onChange={(e) => setNoteNumber(e.target.value)}
+              className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1" htmlFor="observacao">
+              Observação (opcional)
+            </label>
+            <input
+              id="observacao"
+              value={observacao}
+              onChange={(e) => setObservacao(e.target.value)}
+              placeholder="vai direto pra coluna Observações da planilha (ex: MRC, SANTA LUZIA)"
               className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm"
             />
           </div>

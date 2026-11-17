@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { resolveSupplier } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
-import { adjustDueDate } from "@/lib/utils/businessDays";
+import { adjustDueDate, withAdjustNote } from "@/lib/utils/businessDays";
 
 type ManualBody = {
   kind: "FORNECEDOR" | "CLIENTE";
@@ -17,6 +17,8 @@ type ManualBody = {
   pixKey?: string;
   categoryName?: string;
   noteNumber?: string;
+  // Observação livre — vai pra coluna Observações da planilha (ex: MRC, SANTA LUZIA)
+  description?: string;
 };
 
 // Lançamento sem documento nenhum por trás — pra coisas que não têm nota/
@@ -85,7 +87,7 @@ export async function POST(request: NextRequest) {
       supplierId: updatedSupplier.id,
       amount: body.amount,
       dueDate: new Date(adjusted.date),
-      description: adjusted.note,
+      description: withAdjustNote(body.description, adjusted.note),
       paymentStatus: body.kind === "FORNECEDOR" ? body.paymentStatus : undefined,
       paymentMethod: body.kind === "FORNECEDOR" ? body.paymentMethod : undefined,
       pixKey: body.kind === "FORNECEDOR" && body.paymentMethod === "PIX" ? body.pixKey : undefined,
