@@ -5,13 +5,16 @@ import { downloadDocumentFile } from "@/lib/storage/supabase";
 import { extractDocumentPages } from "@/lib/ai/extractDocument";
 import { resolveSupplier, needsOnboardingQuestions } from "@/lib/suppliers/resolveSupplier";
 import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
-import { adjustDueDate } from "@/lib/utils/businessDays";
+import { adjustDueDate, withAdjustNote } from "@/lib/utils/businessDays";
+import { parseUploadObservation } from "@/lib/utils/uploadObservation";
 import { compareWithExistingLaunches } from "@/lib/documents/existingLaunches";
 
 export const processDocument = inngest.createFunction(
   { id: "process-document", retries: 3, triggers: [{ event: "document/uploaded" }] },
   async ({ event, step }) => {
     const { documentId } = event.data;
+    // Empresa escolhida na tela de envio (MRC / Santa Luzia): vai na observação de todos os lançamentos do arquivo.
+    const observation = parseUploadObservation(event.data.observation);
 
     const document = await step.run("load-document", async () => {
       return prisma.document.findUniqueOrThrow({
@@ -177,6 +180,8 @@ export const processDocument = inngest.createFunction(
               knownKind: documentKind ?? page.knownKind ?? null,
               directionConflict,
               reviewReasons,
+              // lido de novo na resposta da tela de perguntas, se o lançamento só sair depois
+              defaultObservation: observation,
             } as unknown as object,
             supplierId: supplier.id,
             confidence: page.confidence,
@@ -218,7 +223,7 @@ export const processDocument = inngest.createFunction(
               supplierId: supplier.id,
               amount: installment.amount,
               dueDate: new Date(installment.dueDate!), // garantido acima (needsInput cobre data faltante)
-              description: installment.adjustNote,
+              description: withAdjustNote(observation, installment.adjustNote),
               // "Pago" não é um traço estável do fornecedor como a categoria
               // é — é um fato de cada cobrança específica. Uma nota nova
               // lançada automático (fornecedor já conhecido) é sempre uma
