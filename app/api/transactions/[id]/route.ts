@@ -94,6 +94,7 @@ export async function PATCH(
     supplierName,
     supplierTaxId,
     excludeId: transaction.id,
+    description: body.description !== undefined ? body.description?.trim() || null : transaction.description,
   });
   if (identical) {
     return NextResponse.json(

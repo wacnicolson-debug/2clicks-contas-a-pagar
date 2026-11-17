@@ -8,6 +8,7 @@ import { syncTransactionToSheet } from "@/lib/sheets/syncTransaction";
 import { normalizeText } from "@/lib/utils/normalizeText";
 import { adjustPaymentDate, withAdjustNote } from "@/lib/utils/businessDays";
 import { parseUploadObservation } from "@/lib/utils/uploadObservation";
+import { costGroupOf } from "@/lib/costs/costGroups";
 
 // Chave de "impressão digital" de um pagamento: data+valor+favorecido
 // normalizado. Dois pagamentos iguais pro mesmo favorecido no mesmo dia (ex:
@@ -15,8 +16,9 @@ import { parseUploadObservation } from "@/lib/utils/uploadObservation";
 // virar "duplicata" um do outro — por isso a CONTAGEM de ocorrências (ver
 // buildAlreadyLaunchedFlags) importa tanto quanto a chave em si. Valores
 // baixos/redondos tornam essa coincidência bem mais provável.
-function paymentLineKey(date: string, amount: number, payeeNameRaw: string): string {
-  return `${date}|${amount.toFixed(2)}|${normalizeText(payeeNameRaw)}`;
+function paymentLineKey(date: string, amount: number, payeeNameRaw: string, empresa: string): string {
+  // empresa (GLM / MRC / Santa Luzia, pela observação): o mesmo pagamento de empresas diferentes não é repetido
+  return `${date}|${amount.toFixed(2)}|${normalizeText(payeeNameRaw)}|${empresa}`;
 }
 
 // Marca como já lançada toda linha que já tem uma ocorrência correspondente
@@ -27,11 +29,12 @@ function paymentLineKey(date: string, amount: number, payeeNameRaw: string): str
 // qualquer ocorrência anterior).
 function buildAlreadyLaunchedFlags(
   lines: ExtractedPaymentLine[],
-  existingCounts: Map<string, number>
+  existingCounts: Map<string, number>,
+  empresa: string
 ): boolean[] {
   const consumed = new Map<string, number>();
   return lines.map((line) => {
-    const key = paymentLineKey(line.date, line.amount, line.payeeNameRaw);
+    const key = paymentLineKey(line.date, line.amount, line.payeeNameRaw, empresa);
     const already = existingCounts.get(key) ?? 0;
     const usedSoFar = consumed.get(key) ?? 0;
     consumed.set(key, usedSoFar + 1);
@@ -96,14 +99,15 @@ export const processPaymentList = inngest.createFunction(
       const dates = [...new Set(dateInfo.map((d) => d.date))].map((d) => new Date(d));
       const rows = await prisma.transaction.findMany({
         where: { companyId: document.companyId, dueDate: { in: dates } },
-        select: { dueDate: true, amount: true, supplier: { select: { name: true } } },
+        select: { dueDate: true, amount: true, description: true, supplier: { select: { name: true } } },
       });
       const counts = new Map<string, number>();
       for (const row of rows) {
         const key = paymentLineKey(
           row.dueDate.toISOString().slice(0, 10),
           Number(row.amount),
-          row.supplier.name
+          row.supplier.name,
+          costGroupOf("empresa", row.description)
         );
         counts.set(key, (counts.get(key) ?? 0) + 1);
       }
@@ -111,7 +115,8 @@ export const processPaymentList = inngest.createFunction(
     });
     const alreadyLaunchedFlags = buildAlreadyLaunchedFlags(
       lines.map((l, i) => ({ ...l, date: dateInfo[i].date })),
-      new Map(existingCounts)
+      new Map(existingCounts),
+      costGroupOf("empresa", observation)
     );
 
     let anyAwaitingInput = false;

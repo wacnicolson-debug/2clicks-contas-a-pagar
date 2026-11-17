@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { normalizeText } from "@/lib/utils/normalizeText";
 import type { Prisma } from "@prisma/client";
+import { costGroupOf } from "@/lib/costs/costGroups";
 
 // Chave de fornecedor tolerante a grafia: "VICUNHA TÊXTIL S/A" e "VICUNHA
 // TEXTIL SA" são o mesmo fornecedor pra efeito de duplicata.
@@ -30,6 +31,9 @@ export async function findIdenticalTransaction(params: {
   // true = só conta quem já foi gravado na planilha (usado na entrada de
   // lançamento novo, pra dois lançamentos novos não descartarem um ao outro).
   onlyInSheet?: boolean;
+  // Observação do lançamento: o mesmo pagamento feito por empresas diferentes do grupo (GLM, MRC, Santa
+  // Luzia...) NÃO é duplicata — ex: a tarifa de salário de cada empresa, mesmo valor e mesmo dia.
+  description?: string | null;
 }) {
   const candidates = await prisma.transaction.findMany({
     where: {
@@ -43,12 +47,14 @@ export async function findIdenticalTransaction(params: {
     include: { supplier: { select: { name: true, taxId: true } } },
     orderBy: { createdAt: "asc" },
   });
+  const group = params.description !== undefined ? costGroupOf("empresa", params.description) : null;
   return (
     candidates.find(
       (c) =>
-        c.supplierId === params.supplierId ||
+        (group === null || costGroupOf("empresa", c.description) === group) &&
+        (c.supplierId === params.supplierId ||
         sameTaxId(c.supplier.taxId, params.supplierTaxId) ||
-        sameSupplierName(c.supplier.name, params.supplierName)
+        sameSupplierName(c.supplier.name, params.supplierName))
     ) ?? null
   );
 }

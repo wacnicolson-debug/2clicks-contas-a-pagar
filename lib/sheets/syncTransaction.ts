@@ -92,6 +92,7 @@ async function syncTransactionCore(
       supplierTaxId: transaction.supplier.taxId,
       excludeId: transaction.id,
       onlyInSheet: true,
+      description: transaction.description,
     });
     if (twin) {
       console.warn(
